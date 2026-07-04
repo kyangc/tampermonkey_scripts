@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.6
+// @version      0.1.7
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -23,13 +23,22 @@
     bannerTextMaxLength: 900,
     blockedHostSuffixes: [
       'adnium.com',
+      'bookmsg.com',
+      'bucklechemistdensity.com',
+      'clickadu.net',
       'crakrevenue.com',
       'culinar9sync.com',
+      'dasdaily.com',
+      'e36c33c4d2.com',
       'exoclick.com',
       'juicyads.com',
+      'nereserv.com',
       'teamskeet.com',
       'theporndude.com',
       'trafficjunky.net',
+      'twinrdengine.com',
+      'wpadmngr.com',
+      'wpushsdk.com',
     ],
     mediaFrameHostSuffixes: ['turbo.cr'],
     topBannerMaxTop: 220,
@@ -44,6 +53,7 @@
   const state = {
     clickGuardInstalled: false,
     cleanScheduled: false,
+    embeddedCleanScheduled: false,
     embeddedFrameGuardInstalled: false,
     observer: null,
   };
@@ -491,6 +501,46 @@
     return { blocked: true, reason: 'external-embed-popup' };
   }
 
+  function classifyTurboEmbedPlacement(placement, baseUrl) {
+    if (!placement || typeof placement !== 'object') return { blocked: false, reason: 'empty' };
+
+    const tagName = String(placement.tagName || '').toUpperCase();
+    const src = String(placement.src || '').trim();
+    const href = String(placement.href || '').trim();
+    const resourceUrl = src || href;
+    if (resourceUrl) {
+      const navigation = classifyNavigationTarget(resourceUrl, baseUrl || 'https://turbo.cr/embed/');
+      if (navigation.blocked) return navigation;
+    }
+
+    const width = getImageMetric(placement, ['width', 'clientWidth', 'offsetWidth']);
+    const height = getImageMetric(placement, ['height', 'clientHeight', 'offsetHeight']);
+    const viewportWidth = toFiniteNumber(placement.viewportWidth);
+    const viewportHeight = toFiniteNumber(placement.viewportHeight);
+    const zIndex = toFiniteNumber(placement.zIndex);
+    const position = String(placement.position || '').toLowerCase();
+    const isLayered = position === 'fixed' || position === 'absolute' || position === 'sticky';
+    const coversViewport =
+      viewportWidth > 0 &&
+      viewportHeight > 0 &&
+      width >= viewportWidth * 0.75 &&
+      height >= viewportHeight * 0.75;
+
+    if (tagName === 'IFRAME' && isLayered && zIndex >= 1000 && width >= 250 && height >= 80) {
+      return { blocked: true, reason: 'turbo-floating-ad-frame' };
+    }
+
+    if (tagName !== 'VIDEO' && isLayered && zIndex >= 1001 && coversViewport) {
+      return { blocked: true, reason: 'turbo-click-shield' };
+    }
+
+    if (tagName !== 'VIDEO' && position === 'fixed' && zIndex >= 100000 && width >= 250 && height >= 80) {
+      return { blocked: true, reason: 'turbo-floating-ad' };
+    }
+
+    return { blocked: false, reason: 'allowed' };
+  }
+
   function classifyClickNavigation(link, baseUrl) {
     const href = link && link.href != null ? String(link.href).trim() : '';
     if (!href) return { action: 'allow', reason: 'empty' };
@@ -537,6 +587,7 @@
     classifyVisualBannerPlacement,
     classifyFramePlacement,
     classifyEmbeddedFramePopup,
+    classifyTurboEmbedPlacement,
     getStyleText,
     isBlockedAdHost,
     isBlockedAdUrl,
@@ -823,27 +874,274 @@
     };
   }
 
-  function findEmbeddedFramePopupDecision(event) {
-    for (const node of getEventPath(event)) {
-      if (!node || node.nodeType !== 1 || !node.matches) continue;
-      if (!node.matches('a[href], area[href], [data-href], [data-url]')) continue;
-
-      const decision = classifyEmbeddedFramePopup(getElementNavigationTarget(node), getLocationHref());
-      if (decision.blocked) return { ...decision, target: node };
-      return null;
+  function getTurboEmbedPlacement(element) {
+    if (!element || !element.getAttribute) return {};
+    const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : {};
+    let style = {};
+    try {
+      style = pageWindow.getComputedStyle ? pageWindow.getComputedStyle(element) : {};
+    } catch (_error) {
+      style = {};
     }
-    return null;
+
+    return {
+      className: element.getAttribute('class') || '',
+      height: rect.height || element.offsetHeight,
+      href: element.getAttribute('href') || '',
+      id: element.getAttribute('id') || '',
+      position: style.position || '',
+      src: element.getAttribute('src') || '',
+      tagName: element.tagName || '',
+      text: element.textContent || '',
+      viewportHeight: pageWindow.innerHeight || 0,
+      viewportWidth: pageWindow.innerWidth || 0,
+      width: rect.width || element.offsetWidth,
+      zIndex: style.zIndex || '',
+    };
   }
 
-  function stopEmbeddedFrameEvent(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+  function isBlockedTurboEmbedElement(element) {
+    return classifyTurboEmbedPlacement(getTurboEmbedPlacement(element), getLocationHref()).blocked;
+  }
+
+  function neutralizeTurboEmbedElement(element) {
+    if (!element || element === document.documentElement || element === document.body || element === document.head) {
+      return false;
+    }
+    if (element.__sacTurboBlocked) return false;
+    element.__sacTurboBlocked = true;
+
+    if (element.tagName === 'SCRIPT') {
+      try {
+        element.type = 'application/x-simp-city-ad-cleaner-blocked';
+      } catch (_error) {
+        // Ignore read-only script type edge cases.
+      }
+    }
+
+    if (element.tagName === 'IFRAME') {
+      try {
+        element.setAttribute('src', 'about:blank');
+      } catch (_error) {
+        // Ignore detached or locked frame edge cases.
+      }
+    }
+
+    if (element.parentNode) {
+      element.parentNode.removeChild(element);
+      return true;
+    }
+
+    if (element.style) {
+      element.style.setProperty('display', 'none', 'important');
+      element.style.setProperty('pointer-events', 'none', 'important');
+      return true;
+    }
+
+    return false;
+  }
+
+  function cleanTurboEmbedAds(root = document) {
+    if (!root || !root.querySelectorAll) return 0;
+
+    let cleaned = 0;
+    const selector = [
+      'script[src]',
+      'iframe',
+      'a[href]',
+      'div',
+      'section',
+      'ins',
+      '[src]',
+      '[href]',
+    ].join(',');
+
+    const candidates = root.matches && root.matches(selector) ? [root, ...root.querySelectorAll(selector)] : root.querySelectorAll(selector);
+    for (const element of candidates) {
+      if (!isBlockedTurboEmbedElement(element)) continue;
+      if (neutralizeTurboEmbedElement(element)) cleaned += 1;
+    }
+    return cleaned;
+  }
+
+  function scheduleTurboEmbedClean() {
+    if (state.embeddedCleanScheduled) return;
+    state.embeddedCleanScheduled = true;
+    const run = () => {
+      state.embeddedCleanScheduled = false;
+      cleanTurboEmbedAds(document);
+    };
+    pageWindow.requestAnimationFrame ? pageWindow.requestAnimationFrame(run) : pageWindow.setTimeout(run, 16);
+  }
+
+  function classifyTurboResourceUrl(value) {
+    return classifyTurboEmbedPlacement({ src: value, tagName: 'SCRIPT' }, getLocationHref());
+  }
+
+  function installTurboEmbedResourceGuards() {
+    const elementProto = pageWindow.Element && pageWindow.Element.prototype;
+    if (elementProto && !elementProto.__sacTurboSetAttributeGuarded) {
+      const nativeSetAttribute = elementProto.setAttribute;
+      if (typeof nativeSetAttribute === 'function') {
+        elementProto.setAttribute = function guardedSetAttribute(name, value) {
+          const attrName = String(name || '').toLowerCase();
+          if ((attrName === 'src' || attrName === 'href') && classifyTurboResourceUrl(value).blocked) {
+            nativeSetAttribute.call(this, `data-sac-blocked-${attrName}`, String(value || ''));
+            scheduleTurboEmbedClean();
+            return undefined;
+          }
+          return nativeSetAttribute.apply(this, arguments);
+        };
+        Object.defineProperty(elementProto, '__sacTurboSetAttributeGuarded', { value: true });
+      }
+    }
+
+    const nodeProto = pageWindow.Node && pageWindow.Node.prototype;
+    if (nodeProto && !nodeProto.__sacTurboInsertionGuarded) {
+      for (const method of ['appendChild', 'insertBefore', 'replaceChild']) {
+        const native = nodeProto[method];
+        if (typeof native !== 'function') continue;
+        nodeProto[method] = function guardedNodeInsert(node) {
+          if (node && node.nodeType === 1 && isBlockedTurboEmbedElement(node)) {
+            neutralizeTurboEmbedElement(node);
+            scheduleTurboEmbedClean();
+            return node;
+          }
+          return native.apply(this, arguments);
+        };
+      }
+      Object.defineProperty(nodeProto, '__sacTurboInsertionGuarded', { value: true });
+    }
+
+    guardTurboUrlProperty(pageWindow.HTMLScriptElement && pageWindow.HTMLScriptElement.prototype, 'src', 'SCRIPT');
+    guardTurboUrlProperty(pageWindow.HTMLIFrameElement && pageWindow.HTMLIFrameElement.prototype, 'src', 'IFRAME');
+    guardTurboUrlProperty(pageWindow.HTMLAnchorElement && pageWindow.HTMLAnchorElement.prototype, 'href', 'A');
+    installTurboNetworkGuards();
+  }
+
+  function guardTurboUrlProperty(proto, property, tagName) {
+    if (!proto || proto[`__sacTurbo${property}Guarded`]) return;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, property);
+    if (!descriptor || typeof descriptor.set !== 'function' || !descriptor.configurable) return;
+
+    try {
+      Object.defineProperty(proto, property, {
+        configurable: true,
+        get: descriptor.get
+          ? function guardedTurboUrlGetter() {
+              return descriptor.get.call(this);
+            }
+          : undefined,
+        set(value) {
+          const placement = { tagName };
+          placement[property] = value;
+          if (classifyTurboEmbedPlacement(placement, getLocationHref()).blocked) {
+            this.setAttribute(`data-sac-blocked-${property}`, String(value || ''));
+            scheduleTurboEmbedClean();
+            return undefined;
+          }
+          return descriptor.set.call(this, value);
+        },
+      });
+      Object.defineProperty(proto, `__sacTurbo${property}Guarded`, { value: true });
+    } catch (_error) {
+      // Some DOM prototypes are not configurable in all browsers.
+    }
+  }
+
+  function installTurboNetworkGuards() {
+    const nativeFetch = pageWindow.fetch;
+    if (typeof nativeFetch === 'function' && !nativeFetch.__sacTurboGuarded) {
+      function guardedTurboFetch(input) {
+        const url = typeof input === 'string' ? input : input && input.url;
+        if (classifyTurboResourceUrl(url).blocked) {
+          scheduleTurboEmbedClean();
+          return Promise.reject(new TypeError('Blocked by SimpCity Ad Cleaner'));
+        }
+        return nativeFetch.apply(this, arguments);
+      }
+      Object.defineProperty(guardedTurboFetch, '__sacTurboGuarded', { value: true });
+      pageWindow.fetch = guardedTurboFetch;
+    }
+
+    const xhrProto = pageWindow.XMLHttpRequest && pageWindow.XMLHttpRequest.prototype;
+    if (xhrProto && !xhrProto.__sacTurboGuarded) {
+      const nativeOpen = xhrProto.open;
+      const nativeSend = xhrProto.send;
+      if (typeof nativeOpen === 'function' && typeof nativeSend === 'function') {
+        xhrProto.open = function guardedTurboXhrOpen(method, url) {
+          this.__sacTurboBlocked = classifyTurboResourceUrl(url).blocked;
+          if (this.__sacTurboBlocked) {
+            scheduleTurboEmbedClean();
+            return nativeOpen.call(this, method, 'about:blank');
+          }
+          return nativeOpen.apply(this, arguments);
+        };
+        xhrProto.send = function guardedTurboXhrSend() {
+          if (this.__sacTurboBlocked) {
+            try {
+              this.abort();
+            } catch (_error) {
+              // Ignore XHR state edge cases.
+            }
+            return undefined;
+          }
+          return nativeSend.apply(this, arguments);
+        };
+        Object.defineProperty(xhrProto, '__sacTurboGuarded', { value: true });
+      }
+    }
+
+    const nativeBeacon = pageWindow.navigator && pageWindow.navigator.sendBeacon;
+    if (typeof nativeBeacon === 'function' && !nativeBeacon.__sacTurboGuarded) {
+      function guardedTurboBeacon(url) {
+        if (classifyTurboResourceUrl(url).blocked) {
+          scheduleTurboEmbedClean();
+          return false;
+        }
+        return nativeBeacon.apply(this, arguments);
+      }
+      Object.defineProperty(guardedTurboBeacon, '__sacTurboGuarded', { value: true });
+      try {
+        pageWindow.navigator.sendBeacon = guardedTurboBeacon;
+      } catch (_error) {
+        // Ignore read-only navigator implementations.
+      }
+    }
+  }
+
+  function installTurboEmbedObserver() {
+    const NativeMutationObserver =
+      pageWindow.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
+    if (!document.documentElement || typeof NativeMutationObserver !== 'function') return;
+
+    const observer = new NativeMutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!node || node.nodeType !== 1) continue;
+          cleanTurboEmbedAds(node);
+        }
+      }
+      scheduleTurboEmbedClean();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href', 'style', 'class'] });
   }
 
   function installEmbeddedFramePopupGuard() {
     if (state.embeddedFrameGuardInstalled) return;
     state.embeddedFrameGuardInstalled = true;
+
+    installTurboEmbedResourceGuards();
+    installTurboEmbedObserver();
+    cleanTurboEmbedAds(document);
+    pageWindow.setTimeout(scheduleTurboEmbedClean, 0);
+    pageWindow.setTimeout(scheduleTurboEmbedClean, CONFIG.storageCleanDelayMs);
+    let cleanPasses = 0;
+    const cleanInterval = pageWindow.setInterval(() => {
+      cleanPasses += 1;
+      cleanTurboEmbedAds(document);
+      if (cleanPasses >= 80) pageWindow.clearInterval(cleanInterval);
+    }, 250);
 
     const nativeOpen = pageWindow.open;
     if (typeof nativeOpen === 'function' && !nativeOpen.__sacEmbeddedGuarded) {
@@ -893,18 +1191,6 @@
         return nativeClick.apply(this, arguments);
       };
       Object.defineProperty(anchorProto, '__sacEmbeddedGuarded', { value: true });
-    }
-
-    const guard = (event) => {
-      const decision = findEmbeddedFramePopupDecision(event);
-      if (!decision) return;
-      stopEmbeddedFrameEvent(event);
-    };
-
-    for (const target of [pageWindow, document]) {
-      for (const type of CLICK_EVENT_TYPES) {
-        target.addEventListener(type, guard, true);
-      }
     }
   }
 

@@ -8,6 +8,10 @@ const core = require('../scripts/simpcity-ad-cleaner.user.js');
 test('blocks known SimpCity ad redirect hosts while allowing forum URLs', () => {
   assert.equal(core.isBlockedAdUrl('https://tt.culinar9sync.com/click?zone=top'), true);
   assert.equal(core.isBlockedAdUrl('https://www.theporndude.com/'), true);
+  assert.equal(core.isBlockedAdUrl('https://bucklechemistdensity.com/on.js'), true);
+  assert.equal(core.isBlockedAdUrl('https://js.wpadmngr.com/static/adManager.js'), true);
+  assert.equal(core.isBlockedAdUrl('https://js.wpushsdk.com/npc/sdk/wpu/npush.m.js'), true);
+  assert.equal(core.isBlockedAdUrl('https://nereserv.com/in/dip?site=native-push'), true);
   assert.equal(core.isBlockedAdUrl('https://goonbox.cr/'), false);
   assert.equal(core.isBlockedAdUrl('https://simpcity.cr/forums/requests.1/'), false);
   assert.equal(core.isBlockedAdUrl('/threads/example.123/', 'https://simpcity.cr/'), false);
@@ -277,5 +281,64 @@ test('blocks external popups from Turbo embed frames without globally blocking Y
   assert.deepEqual(
     core.classifyEmbeddedFramePopup('https://www.youtube.com/watch?v=N7zxBYs6U3c', 'https://simpcity.cr/'),
     { blocked: false, reason: 'not-embed-frame' },
+  );
+});
+
+test('classifies Turbo embed ad scripts and click shields as removable', () => {
+  assert.deepEqual(
+    core.classifyTurboEmbedPlacement({
+      src: 'https://bucklechemistdensity.com/on.js',
+      tagName: 'SCRIPT',
+    }),
+    { blocked: true, reason: 'blocked-host' },
+  );
+
+  assert.deepEqual(
+    core.classifyTurboEmbedPlacement({
+      src: 'https://js.wpadmngr.com/static/adManager.js',
+      tagName: 'SCRIPT',
+    }),
+    { blocked: true, reason: 'blocked-host' },
+  );
+
+  assert.deepEqual(
+    core.classifyTurboEmbedPlacement({
+      height: 1170,
+      position: 'absolute',
+      tagName: 'DIV',
+      viewportHeight: 1170,
+      viewportWidth: 1720,
+      width: 1720,
+      zIndex: 1001,
+    }),
+    { blocked: true, reason: 'turbo-click-shield' },
+  );
+
+  assert.deepEqual(
+    core.classifyTurboEmbedPlacement({
+      height: 150,
+      position: 'fixed',
+      tagName: 'IFRAME',
+      viewportHeight: 1170,
+      viewportWidth: 1720,
+      width: 400,
+      zIndex: 2147483647,
+    }),
+    { blocked: true, reason: 'turbo-floating-ad-frame' },
+  );
+
+  assert.deepEqual(
+    core.classifyTurboEmbedPlacement({
+      className: 'watermark',
+      height: 20,
+      position: 'absolute',
+      tagName: 'DIV',
+      text: 'turbo.cr',
+      viewportHeight: 1170,
+      viewportWidth: 1720,
+      width: 82,
+      zIndex: 1000,
+    }),
+    { blocked: false, reason: 'allowed' },
   );
 });

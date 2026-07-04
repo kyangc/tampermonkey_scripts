@@ -17,6 +17,20 @@
 
 - `https://kp.m-team.cc/*`
 
+### SimpCity 广告清理
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/simpcity-ad-cleaner.user.js)
+
+功能：
+
+- 拦截 SimpCity 上已知广告域名触发的点击弹窗和跳转。
+- 隐藏首页和动态插入的广告 banner / 推广块。
+
+适用页面：
+
+- `https://simpcity.cr/*`
+- `https://www.simpcity.cr/*`
+
 安装方式：
 
 1. 浏览器安装 Tampermonkey 扩展。

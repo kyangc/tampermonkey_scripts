@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.0
+// @version      0.1.1
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -29,6 +29,11 @@
       'theporndude.com',
       'trafficjunky.net',
     ],
+    topBannerMaxTop: 220,
+    wideBannerMaxHeight: 160,
+    wideBannerMinAspectRatio: 2.2,
+    wideBannerMinHeight: 40,
+    wideBannerMinWidth: 220,
     storageCleanDelayMs: 50,
   };
 
@@ -60,6 +65,21 @@
     /\bfree\s+sex\s+cams\b/i,
     /\bbuild\s+your\s+dream\s+fucktoy\b/i,
     /\bultimate\s+adult\s+ai\s+playground\b/i,
+  ];
+
+  const IMAGE_BANNER_PATTERNS = [
+    /18\+/i,
+    /\bclick[-_ ]?ad\b/i,
+    /\bporn[-_ ]?game\b/i,
+    /全次元/,
+    /成人/,
+    /开始游戏/,
+    /开启.*冒险/,
+    /手[游遊]/,
+    /海贼王/,
+    /海賊王/,
+    /脱衣/,
+    /邂逅.*海洋/,
   ];
 
   const AD_CONTAINER_SELECTORS = [
@@ -148,6 +168,111 @@
     return BANNER_TEXT_PATTERNS.some((pattern) => pattern.test(text));
   }
 
+  function isBlockedImageText(value) {
+    const text = normalizeText(value);
+    if (!text || text.length > CONFIG.bannerTextMaxLength) return false;
+    return IMAGE_BANNER_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
+  function toFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function isSameSiteUrl(value, baseUrl) {
+    const url = parseUrl(value, baseUrl);
+    if (!url || !/^https?:$/.test(url.protocol)) return false;
+    const host = normalizeHost(url.hostname);
+    const baseHost = normalizeHost((parseUrl(baseUrl || 'https://simpcity.cr/') || {}).hostname);
+    return host === baseHost || host === 'simpcity.cr';
+  }
+
+  function isExternalHttpUrl(value, baseUrl) {
+    const url = parseUrl(value, baseUrl);
+    if (!url || !/^https?:$/.test(url.protocol)) return false;
+    return !isSameSiteUrl(url.href, baseUrl);
+  }
+
+  function getImageMetric(image, keys) {
+    for (const key of keys) {
+      const value = image && image[key];
+      const number = toFiniteNumber(value);
+      if (number > 0) return number;
+    }
+    return 0;
+  }
+
+  function getImageSearchText(image) {
+    return normalizeText(
+      [
+        image && image.alt,
+        image && image.title,
+        image && image.ariaLabel,
+        image && image.src,
+        image && image.href,
+      ].join(' '),
+    );
+  }
+
+  function isWideBannerShape(image) {
+    const width = getImageMetric(image, ['width', 'clientWidth', 'naturalWidth', 'offsetWidth']);
+    const height = getImageMetric(image, ['height', 'clientHeight', 'naturalHeight', 'offsetHeight']);
+    if (!width || !height) return false;
+    return (
+      width >= CONFIG.wideBannerMinWidth &&
+      height >= CONFIG.wideBannerMinHeight &&
+      height <= CONFIG.wideBannerMaxHeight &&
+      width / height >= CONFIG.wideBannerMinAspectRatio
+    );
+  }
+
+  function classifyImagePlacement(image, baseUrl) {
+    if (!image || typeof image !== 'object') return { blocked: false, reason: 'empty' };
+
+    const hasTopMetric = Object.prototype.hasOwnProperty.call(image, 'top') && image.top != null && image.top !== '';
+    const top = toFiniteNumber(image.top);
+    const isTopPlacement = hasTopMetric && top >= 0 && top <= CONFIG.topBannerMaxTop;
+    const hasOffSiteTarget = isExternalHttpUrl(image.href, baseUrl) || isExternalHttpUrl(image.src, baseUrl);
+    const isWideBanner = isWideBannerShape(image);
+
+    if (isBlockedImageText(getImageSearchText(image)) && (isTopPlacement || (isWideBanner && hasOffSiteTarget))) {
+      return { blocked: true, reason: 'ad-image-text' };
+    }
+
+    if (isBlockedAdUrl(image.href, baseUrl) || isBlockedAdUrl(image.src, baseUrl)) {
+      return { blocked: true, reason: 'blocked-host' };
+    }
+
+    if (isTopPlacement && isWideBanner && hasOffSiteTarget) {
+      return { blocked: true, reason: 'top-wide-linked-image' };
+    }
+
+    return { blocked: false, reason: 'allowed' };
+  }
+
+  function getImagePlacement(image) {
+    if (!image || !image.getAttribute) return {};
+    const rect = typeof image.getBoundingClientRect === 'function' ? image.getBoundingClientRect() : {};
+    const link = image.closest ? image.closest('a[href], [data-href], [data-url]') : null;
+    return {
+      alt: image.getAttribute('alt') || '',
+      ariaLabel: image.getAttribute('aria-label') || '',
+      clientHeight: image.clientHeight,
+      clientWidth: image.clientWidth,
+      height: rect.height || image.height,
+      href:
+        (link &&
+          (link.getAttribute('href') || link.getAttribute('data-href') || link.getAttribute('data-url') || '')) ||
+        '',
+      naturalHeight: image.naturalHeight,
+      naturalWidth: image.naturalWidth,
+      src: image.currentSrc || image.getAttribute('src') || '',
+      title: image.getAttribute('title') || '',
+      top: rect.top,
+      width: rect.width || image.width,
+    };
+  }
+
   function classifyNavigationTarget(value, baseUrl) {
     if (value == null || String(value).trim() === '') {
       return { blocked: false, reason: 'empty' };
@@ -178,10 +303,12 @@
 
   const core = {
     classifyNavigationTarget,
+    classifyImagePlacement,
     getStyleText,
     isBlockedAdHost,
     isBlockedAdUrl,
     isBlockedBannerText,
+    isBlockedImageText,
     normalizeHost,
     normalizeText,
   };
@@ -288,6 +415,18 @@
     return removed;
   }
 
+  function cleanImageBanners(root) {
+    if (!root || !root.querySelectorAll) return 0;
+
+    let removed = 0;
+    for (const image of root.querySelectorAll('img, picture img')) {
+      const decision = classifyImagePlacement(getImagePlacement(image), getLocationHref());
+      if (!decision.blocked) continue;
+      if (removeElement(image)) removed += 1;
+    }
+    return removed;
+  }
+
   function cleanInlineHandlers(root) {
     if (!root || !root.querySelectorAll) return 0;
 
@@ -309,6 +448,7 @@
   function cleanAds(root = document) {
     cleanInlineHandlers(root);
     cleanLinkedAds(root);
+    cleanImageBanners(root);
     cleanTextBanners(root);
   }
 

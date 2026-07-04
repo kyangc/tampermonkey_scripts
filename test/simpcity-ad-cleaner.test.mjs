@@ -35,3 +35,40 @@ test('decides whether a popup/navigation target should be blocked', () => {
     reason: 'empty',
   });
 });
+
+test('classifies top-of-page wide game banners as removable ad images', () => {
+  assert.deepEqual(
+    core.classifyImagePlacement({
+      alt: '海贼王 最邂逅的海洋 开启性爱梦想冒险之旅',
+      height: 90,
+      href: 'https://promo.example-game.test/click',
+      src: 'https://cdn.example-game.test/op-banner.webp',
+      top: 36,
+      width: 300,
+    }),
+    { blocked: true, reason: 'ad-image-text' },
+  );
+
+  assert.deepEqual(
+    core.classifyImagePlacement({
+      height: 90,
+      href: 'https://promo.example-game.test/click',
+      src: 'https://cdn.example-game.test/banner-300x90.webp',
+      top: 42,
+      width: 300,
+    }),
+    { blocked: true, reason: 'top-wide-linked-image' },
+  );
+
+  assert.deepEqual(
+    core.classifyImagePlacement({
+      height: 480,
+      href: 'https://simpcity.cr/threads/example.123/',
+      alt: '18+ forum attachment',
+      src: 'https://simpcity.cr/attachments/example.jpg',
+      top: 820,
+      width: 720,
+    }),
+    { blocked: false, reason: 'allowed' },
+  );
+});

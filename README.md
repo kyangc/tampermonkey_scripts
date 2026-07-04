@@ -30,6 +30,8 @@
 
 - `https://simpcity.cr/*`
 - `https://www.simpcity.cr/*`
+- `https://turbo.cr/embed/*`
+- `https://www.turbo.cr/embed/*`
 
 安装方式：
 

@@ -122,6 +122,31 @@ test('classifies top-of-page wide game banners as removable ad images', () => {
   );
 });
 
+test('classifies bottom linked wide banners as removable ad images', () => {
+  assert.deepEqual(
+    core.classifyImagePlacement({
+      height: 90,
+      href: 'https://promo.example-game.test/click',
+      src: 'https://cdn.example-game.test/banner-300x90.webp',
+      top: 3600,
+      width: 300,
+    }),
+    { blocked: true, reason: 'linked-wide-image' },
+  );
+
+  assert.deepEqual(
+    core.classifyImagePlacement({
+      alt: '百位AI女友任你邂逅 开启心动同居 登录即送SSR女友',
+      height: 90,
+      href: 'https://promo.example-game.test/click',
+      src: 'https://cdn.example-game.test/ai-girlfriend.webp',
+      top: 3600,
+      width: 300,
+    }),
+    { blocked: true, reason: 'ad-image-text' },
+  );
+});
+
 test('classifies top-of-page background image banners as removable ads', () => {
   assert.deepEqual(
     core.classifyVisualBannerPlacement({
@@ -168,7 +193,7 @@ test('classifies top-of-page background image banners as removable ads', () => {
   );
 });
 
-test('sandboxes third-party media iframes without allowing popups', () => {
+test('allows third-party media iframes because embed-page popup guards handle Turbo', () => {
   assert.deepEqual(
     core.classifyFramePlacement({
       className: 'saint-iframe',
@@ -177,7 +202,7 @@ test('sandboxes third-party media iframes without allowing popups', () => {
       src: 'https://turbo.cr/embed/QbNWKX4Hmb8CW',
       width: 483,
     }),
-    { action: 'sandbox', reason: 'third-party-media-frame' },
+    { action: 'allow', reason: 'known-media-frame' },
   );
 
   assert.deepEqual(
@@ -205,6 +230,19 @@ test('sandboxes third-party media iframes without allowing popups', () => {
 
   assert.deepEqual(
     core.classifyFramePlacement({
+      className: '',
+      height: 90,
+      id: '__clb-spot_2086797_oqh_2_container',
+      sandbox: '',
+      src: '',
+      top: 4048,
+      width: 728,
+    }),
+    { action: 'remove', reason: 'ad-frame-shell' },
+  );
+
+  assert.deepEqual(
+    core.classifyFramePlacement({
       height: 120,
       sandbox: '',
       src: 'https://simpcity.cr/embed/local',
@@ -212,9 +250,32 @@ test('sandboxes third-party media iframes without allowing popups', () => {
     }),
     { action: 'allow', reason: 'same-site' },
   );
+});
 
-  assert.equal(core.getMediaFrameSandboxValue().includes('allow-scripts'), true);
-  assert.equal(core.getMediaFrameSandboxValue().includes('allow-same-origin'), true);
-  assert.equal(core.getMediaFrameSandboxValue().includes('allow-popups'), false);
-  assert.equal(core.getMediaFrameSandboxValue().includes('allow-top-navigation'), false);
+test('blocks external popups from Turbo embed frames without globally blocking YouTube', () => {
+  assert.equal(core.isTurboEmbedUrl('https://turbo.cr/embed/QbNWKX4Hmb8CW'), true);
+  assert.equal(core.isTurboEmbedUrl('https://turbo.cr/videos/QbNWKX4Hmb8CW'), false);
+
+  assert.deepEqual(
+    core.classifyNavigationTarget('https://www.youtube.com/watch?v=N7zxBYs6U3c'),
+    { blocked: false, reason: 'allowed' },
+  );
+
+  assert.deepEqual(
+    core.classifyEmbeddedFramePopup(
+      'https://www.youtube.com/watch?v=N7zxBYs6U3c',
+      'https://turbo.cr/embed/QbNWKX4Hmb8CW',
+    ),
+    { blocked: true, reason: 'external-embed-popup' },
+  );
+
+  assert.deepEqual(
+    core.classifyEmbeddedFramePopup('/embed/QbNWKX4Hmb8CW', 'https://turbo.cr/embed/QbNWKX4Hmb8CW'),
+    { blocked: false, reason: 'same-embed-site' },
+  );
+
+  assert.deepEqual(
+    core.classifyEmbeddedFramePopup('https://www.youtube.com/watch?v=N7zxBYs6U3c', 'https://simpcity.cr/'),
+    { blocked: false, reason: 'not-embed-frame' },
+  );
 });

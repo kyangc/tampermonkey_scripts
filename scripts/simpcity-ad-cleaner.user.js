@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.5
+// @version      0.1.6
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -10,6 +10,8 @@
 // @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/simpcity-ad-cleaner.user.js
 // @match        https://simpcity.cr/*
 // @match        https://www.simpcity.cr/*
+// @match        https://turbo.cr/embed/*
+// @match        https://www.turbo.cr/embed/*
 // @run-at       document-start
 // @grant        unsafeWindow
 // ==/UserScript==
@@ -42,6 +44,7 @@
   const state = {
     clickGuardInstalled: false,
     cleanScheduled: false,
+    embeddedFrameGuardInstalled: false,
     observer: null,
   };
 
@@ -86,6 +89,11 @@
     /海賊王/,
     /脱衣/,
     /邂逅.*海洋/,
+    /AI女友/i,
+    /SSR女友/i,
+    /登录即送/,
+    /互[动動]剧情/,
+    /沉浸/,
   ];
 
   const LIKELY_AD_NAVIGATION_PATTERNS = [
@@ -277,6 +285,7 @@
     const hasTopMetric = Object.prototype.hasOwnProperty.call(image, 'top') && image.top != null && image.top !== '';
     const top = toFiniteNumber(image.top);
     const isTopPlacement = hasTopMetric && top >= 0 && top <= CONFIG.topBannerMaxTop;
+    const hasOffSiteLink = isExternalHttpUrl(image.href, baseUrl);
     const hasOffSiteTarget = isExternalHttpUrl(image.href, baseUrl) || isExternalHttpUrl(image.src, baseUrl);
     const isWideBanner = isWideBannerShape(image);
 
@@ -290,6 +299,10 @@
 
     if (isTopPlacement && isWideBanner && hasOffSiteTarget) {
       return { blocked: true, reason: 'top-wide-linked-image' };
+    }
+
+    if (isWideBanner && hasOffSiteLink) {
+      return { blocked: true, reason: 'linked-wide-image' };
     }
 
     return { blocked: false, reason: 'allowed' };
@@ -349,15 +362,17 @@
     return { blocked: false, reason: 'allowed' };
   }
 
-  function getMediaFrameSandboxValue() {
-    return 'allow-forms allow-presentation allow-same-origin allow-scripts';
-  }
-
   function isKnownMediaFrameHost(value, baseUrl) {
     const url = parseUrl(value, baseUrl);
     if (!url || !/^https?:$/.test(url.protocol)) return false;
     const host = normalizeHost(url.hostname);
     return CONFIG.mediaFrameHostSuffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  }
+
+  function isTurboEmbedUrl(value) {
+    const url = parseUrl(value, 'https://turbo.cr/');
+    if (!url || !/^https?:$/.test(url.protocol)) return false;
+    return isKnownMediaFrameHost(url.href) && /^\/embed(?:\/|$)/i.test(url.pathname);
   }
 
   function isMediaFrameShape(frame) {
@@ -366,9 +381,13 @@
     return width >= 280 && height >= 150;
   }
 
-  function isTopWideEmptyFrame(frame) {
+  function isEmptyFrameSrc(frame) {
     const src = String((frame && frame.src) || '').trim();
-    if (src && src !== 'about:blank') return false;
+    return !src || src === 'about:blank';
+  }
+
+  function isTopWideEmptyFrame(frame) {
+    if (!isEmptyFrameSrc(frame)) return false;
 
     const hasTopMetric = Object.prototype.hasOwnProperty.call(frame, 'top') && frame.top != null && frame.top !== '';
     const top = toFiniteNumber(frame && frame.top);
@@ -385,10 +404,29 @@
     );
   }
 
+  function getFrameSearchText(frame) {
+    return normalizeText(
+      [
+        frame && frame.ariaLabel,
+        frame && frame.className,
+        frame && frame.id,
+        frame && frame.name,
+        frame && frame.src,
+        frame && frame.title,
+      ].join(' '),
+    );
+  }
+
+  function isAdFrameShell(frame) {
+    if (!isEmptyFrameSrc(frame) || !isWideBannerShape(frame)) return false;
+    return /(?:^|[\s_-])(?:__clb-spot|ad|ads|advert|banner|sam)(?:$|[\s_-])/i.test(getFrameSearchText(frame));
+  }
+
   function classifyFramePlacement(frame, baseUrl) {
     if (!frame || typeof frame !== 'object') return { action: 'allow', reason: 'empty' };
     const src = String(frame.src || '').trim();
     if (isTopWideEmptyFrame(frame)) return { action: 'remove', reason: 'top-wide-empty-frame' };
+    if (isAdFrameShell(frame)) return { action: 'remove', reason: 'ad-frame-shell' };
     if (!src) return { action: 'allow', reason: 'empty' };
 
     const navigation = classifyNavigationTarget(src, baseUrl);
@@ -397,12 +435,9 @@
     if (isSameSiteUrl(src, baseUrl || 'https://simpcity.cr/')) return { action: 'allow', reason: 'same-site' };
 
     const className = String(frame.className || '');
-    if (
-      isKnownMediaFrameHost(src, baseUrl) ||
-      /\b(?:embed|media|player|saint-iframe|video)\b/i.test(className) ||
-      isMediaFrameShape(frame)
-    ) {
-      return { action: 'sandbox', reason: 'third-party-media-frame' };
+    if (isKnownMediaFrameHost(src, baseUrl)) return { action: 'allow', reason: 'known-media-frame' };
+    if (/\b(?:embed|media|player|saint-iframe|video)\b/i.test(className) || isMediaFrameShape(frame)) {
+      return { action: 'allow', reason: 'third-party-media-frame' };
     }
 
     return { action: 'allow', reason: 'external-frame' };
@@ -442,6 +477,18 @@
       return { blocked: true, reason: 'likely-ad-url' };
     }
     return { blocked: false, reason: 'allowed' };
+  }
+
+  function classifyEmbeddedFramePopup(value, frameUrl) {
+    if (!isTurboEmbedUrl(frameUrl)) return { blocked: false, reason: 'not-embed-frame' };
+    if (value == null || String(value).trim() === '') return { blocked: true, reason: 'empty-embed-popup' };
+
+    const url = parseUrl(value, frameUrl);
+    if (!url) return { blocked: true, reason: 'invalid-embed-popup' };
+    if (!/^https?:$/.test(url.protocol)) return { blocked: true, reason: 'non-http-embed-popup' };
+    if (isKnownMediaFrameHost(url.href, frameUrl)) return { blocked: false, reason: 'same-embed-site' };
+
+    return { blocked: true, reason: 'external-embed-popup' };
   }
 
   function classifyClickNavigation(link, baseUrl) {
@@ -489,13 +536,14 @@
     classifyImagePlacement,
     classifyVisualBannerPlacement,
     classifyFramePlacement,
-    getMediaFrameSandboxValue,
+    classifyEmbeddedFramePopup,
     getStyleText,
     isBlockedAdHost,
     isBlockedAdUrl,
     isBlockedBannerText,
     isBlockedImageText,
     isLikelyAdNavigationUrl,
+    isTurboEmbedUrl,
     normalizeHost,
     normalizeText,
   };
@@ -511,6 +559,10 @@
 
   function getLocationHref() {
     return pageWindow.location && pageWindow.location.href ? pageWindow.location.href : 'https://simpcity.cr/';
+  }
+
+  function isEmbeddedFramePage() {
+    return isTurboEmbedUrl(getLocationHref());
   }
 
   function hasBlockedHref(element) {
@@ -677,29 +729,17 @@
   function getFramePlacement(frame) {
     if (!frame || !frame.getAttribute) return {};
     return {
+      ariaLabel: frame.getAttribute('aria-label') || '',
       className: frame.getAttribute('class') || '',
       height: frame.height || frame.clientHeight || frame.offsetHeight,
+      id: frame.getAttribute('id') || '',
+      name: frame.getAttribute('name') || '',
       sandbox: frame.getAttribute('sandbox') || '',
       src: frame.getAttribute('src') || '',
+      title: frame.getAttribute('title') || '',
       top: typeof frame.getBoundingClientRect === 'function' ? frame.getBoundingClientRect().top : null,
       width: frame.width || frame.clientWidth || frame.offsetWidth,
     };
-  }
-
-  function sandboxMediaFrame(frame) {
-    if (!frame || !frame.setAttribute) return false;
-    const sandbox = getMediaFrameSandboxValue();
-    if (frame.getAttribute('sandbox') === sandbox && frame.dataset.sacSandboxed === '1') return false;
-
-    const src = frame.getAttribute('src') || '';
-    frame.setAttribute('sandbox', sandbox);
-    frame.dataset.sacSandboxed = '1';
-
-    if (src && frame.dataset.sacSandboxReloaded !== '1') {
-      frame.dataset.sacSandboxReloaded = '1';
-      frame.setAttribute('src', src);
-    }
-    return true;
   }
 
   function cleanFramePopups(root) {
@@ -711,9 +751,6 @@
       if (decision.action === 'remove') {
         if (removeElement(frame)) cleaned += 1;
         continue;
-      }
-      if (decision.action === 'sandbox') {
-        if (sandboxMediaFrame(frame)) cleaned += 1;
       }
     }
     return cleaned;
@@ -784,6 +821,91 @@
       dataXfClick: element.getAttribute('data-xf-click') || '',
       href: getElementNavigationTarget(element),
     };
+  }
+
+  function findEmbeddedFramePopupDecision(event) {
+    for (const node of getEventPath(event)) {
+      if (!node || node.nodeType !== 1 || !node.matches) continue;
+      if (!node.matches('a[href], area[href], [data-href], [data-url]')) continue;
+
+      const decision = classifyEmbeddedFramePopup(getElementNavigationTarget(node), getLocationHref());
+      if (decision.blocked) return { ...decision, target: node };
+      return null;
+    }
+    return null;
+  }
+
+  function stopEmbeddedFrameEvent(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+  }
+
+  function installEmbeddedFramePopupGuard() {
+    if (state.embeddedFrameGuardInstalled) return;
+    state.embeddedFrameGuardInstalled = true;
+
+    const nativeOpen = pageWindow.open;
+    if (typeof nativeOpen === 'function' && !nativeOpen.__sacEmbeddedGuarded) {
+      function guardedEmbeddedOpen(url) {
+        const decision = classifyEmbeddedFramePopup(url, getLocationHref());
+        if (decision.blocked) return null;
+        return nativeOpen.apply(this, arguments);
+      }
+
+      Object.defineProperty(guardedEmbeddedOpen, '__sacEmbeddedGuarded', { value: true });
+      pageWindow.open = guardedEmbeddedOpen;
+    }
+
+    const location = pageWindow.location;
+    if (location && !location.__sacEmbeddedGuarded) {
+      for (const method of ['assign', 'replace']) {
+        const native = location[method];
+        if (typeof native !== 'function') continue;
+
+        try {
+          Object.defineProperty(location, method, {
+            configurable: true,
+            value(url) {
+              const decision = classifyEmbeddedFramePopup(url, getLocationHref());
+              if (decision.blocked) return undefined;
+              return native.call(this, url);
+            },
+          });
+        } catch (_error) {
+          // Location methods are often non-configurable; click and window.open guards still cover popup paths.
+        }
+      }
+
+      try {
+        Object.defineProperty(location, '__sacEmbeddedGuarded', { value: true });
+      } catch (_error) {
+        // Ignore non-extensible Location objects.
+      }
+    }
+
+    const anchorProto = pageWindow.HTMLAnchorElement && pageWindow.HTMLAnchorElement.prototype;
+    if (anchorProto && !anchorProto.__sacEmbeddedGuarded && typeof anchorProto.click === 'function') {
+      const nativeClick = anchorProto.click;
+      anchorProto.click = function guardedEmbeddedAnchorClick() {
+        const decision = classifyEmbeddedFramePopup(getElementNavigationTarget(this), getLocationHref());
+        if (decision.blocked) return undefined;
+        return nativeClick.apply(this, arguments);
+      };
+      Object.defineProperty(anchorProto, '__sacEmbeddedGuarded', { value: true });
+    }
+
+    const guard = (event) => {
+      const decision = findEmbeddedFramePopupDecision(event);
+      if (!decision) return;
+      stopEmbeddedFrameEvent(event);
+    };
+
+    for (const target of [pageWindow, document]) {
+      for (const type of CLICK_EVENT_TYPES) {
+        target.addEventListener(type, guard, true);
+      }
+    }
   }
 
   function findEventNavigationDecision(event) {
@@ -971,6 +1093,11 @@
     installObserver();
     cleanAds(document);
     pageWindow.setTimeout(scheduleClean, CONFIG.storageCleanDelayMs);
+  }
+
+  if (isEmbeddedFramePage()) {
+    installEmbeddedFramePopupGuard();
+    return;
   }
 
   installWindowOpenGuard();

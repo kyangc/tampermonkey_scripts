@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.4
+// @version      0.1.5
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -366,9 +366,29 @@
     return width >= 280 && height >= 150;
   }
 
+  function isTopWideEmptyFrame(frame) {
+    const src = String((frame && frame.src) || '').trim();
+    if (src && src !== 'about:blank') return false;
+
+    const hasTopMetric = Object.prototype.hasOwnProperty.call(frame, 'top') && frame.top != null && frame.top !== '';
+    const top = toFiniteNumber(frame && frame.top);
+    const width = getImageMetric(frame, ['width', 'clientWidth', 'offsetWidth']);
+    const height = getImageMetric(frame, ['height', 'clientHeight', 'offsetHeight']);
+    return (
+      hasTopMetric &&
+      top >= 0 &&
+      top <= CONFIG.topBannerMaxTop &&
+      width >= CONFIG.wideBackgroundMinWidth &&
+      height >= CONFIG.wideBannerMinHeight &&
+      height <= CONFIG.wideBannerMaxHeight &&
+      width / height >= CONFIG.wideBannerMinAspectRatio
+    );
+  }
+
   function classifyFramePlacement(frame, baseUrl) {
     if (!frame || typeof frame !== 'object') return { action: 'allow', reason: 'empty' };
     const src = String(frame.src || '').trim();
+    if (isTopWideEmptyFrame(frame)) return { action: 'remove', reason: 'top-wide-empty-frame' };
     if (!src) return { action: 'allow', reason: 'empty' };
 
     const navigation = classifyNavigationTarget(src, baseUrl);
@@ -661,6 +681,7 @@
       height: frame.height || frame.clientHeight || frame.offsetHeight,
       sandbox: frame.getAttribute('sandbox') || '',
       src: frame.getAttribute('src') || '',
+      top: typeof frame.getBoundingClientRect === 'function' ? frame.getBoundingClientRect().top : null,
       width: frame.width || frame.clientWidth || frame.offsetWidth,
     };
   }
@@ -685,7 +706,7 @@
     if (!root || !root.querySelectorAll) return 0;
 
     let cleaned = 0;
-    for (const frame of root.querySelectorAll('iframe[src]')) {
+    for (const frame of root.querySelectorAll('iframe')) {
       const decision = classifyFramePlacement(getFramePlacement(frame), getLocationHref());
       if (decision.action === 'remove') {
         if (removeElement(frame)) cleaned += 1;

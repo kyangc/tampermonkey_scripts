@@ -185,9 +185,22 @@ test('sandboxes third-party media iframes without allowing popups', () => {
       height: 90,
       sandbox: '',
       src: 'https://cdn.example.test/adserver/frame.html?zone_id=72890',
+      top: 32,
       width: 728,
     }),
     { action: 'remove', reason: 'likely-ad-url' },
+  );
+
+  assert.deepEqual(
+    core.classifyFramePlacement({
+      className: '',
+      height: 90,
+      sandbox: '',
+      src: '',
+      top: 32,
+      width: 728,
+    }),
+    { action: 'remove', reason: 'top-wide-empty-frame' },
   );
 
   assert.deepEqual(

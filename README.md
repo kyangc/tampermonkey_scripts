@@ -34,6 +34,7 @@
 - `test/`：脚本中纯逻辑部分的 Node 测试。
 - `tools/`：本仓库的工程校验脚本。
 - `docs/userscript-conventions.md`：油猴脚本发布和更新约定。
+- `AGENTS.md`：给新 AI thread / coding agent 的项目操作说明。
 
 ## 本地开发
 
@@ -63,6 +64,7 @@ node --check scripts/m-team-torrent-enhancer.user.js
 
 ## 备注
 
+- 起新 AI thread 做脚本时，可以让它先读 `AGENTS.md` 和 `docs/userscript-conventions.md`。
 - 新增或更新脚本前，先看 [油猴脚本工程约定](docs/userscript-conventions.md)。
 - 脚本文件名统一使用 `kebab-case.user.js`。
 - 不要提交站点 token、cookie 或其他隐私数据。

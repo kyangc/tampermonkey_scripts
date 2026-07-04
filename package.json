@@ -3,6 +3,9 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "validate:userscripts": "node tools/validate-userscripts.mjs",
+    "syntax:userscripts": "find scripts -name '*.user.js' -print0 | xargs -0 -n1 node --check",
+    "check": "npm run validate:userscripts && npm run syntax:userscripts && npm test"
   }
 }

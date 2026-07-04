@@ -32,8 +32,22 @@
 
 - `scripts/`：Tampermonkey `.user.js` 脚本。
 - `test/`：脚本中纯逻辑部分的 Node 测试。
+- `tools/`：本仓库的工程校验脚本。
+- `docs/userscript-conventions.md`：油猴脚本发布和更新约定。
 
 ## 本地开发
+
+完整检查：
+
+```bash
+npm run check
+```
+
+校验油猴脚本发布元信息：
+
+```bash
+npm run validate:userscripts
+```
 
 运行测试：
 
@@ -49,5 +63,6 @@ node --check scripts/m-team-torrent-enhancer.user.js
 
 ## 备注
 
+- 新增或更新脚本前，先看 [油猴脚本工程约定](docs/userscript-conventions.md)。
 - 脚本文件名统一使用 `kebab-case.user.js`。
 - 不要提交站点 token、cookie 或其他隐私数据。

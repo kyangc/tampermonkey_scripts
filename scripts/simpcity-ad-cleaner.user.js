@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.7
+// @version      0.1.8
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -136,6 +136,12 @@
     'div',
   ];
 
+  const BROAD_SITE_CONTAINER_PATTERN =
+    /(?:^|\s)(?:block(?:--category|-body|-container)?|hScroller(?:-scroll)?|p-body(?:-[\w-]+)?|p-header(?:-[\w-]+)?|p-nav|p-nav-scroller)(?=\s|$)/i;
+  const EXPLICIT_AD_CONTAINER_PATTERN =
+    /(?:^|[\s_-])(?:__clb-spot|ad|ads|advert|banner|samBannerUnit|samCodeUnit|siropuAdsManager)(?:$|[\s_-])/i;
+  const REMOVABLE_RESOURCE_TAGS = new Set(['A', 'IFRAME', 'IMG', 'SCRIPT']);
+
   const TEXT_BANNER_CANDIDATE_SELECTOR = [
     '.samBannerUnit',
     '.samCodeUnit',
@@ -205,6 +211,76 @@
     const text = normalizeText(value);
     if (!text || text.length > CONFIG.bannerTextMaxLength) return false;
     return IMAGE_BANNER_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
+  function getContainerIdentityText(candidate) {
+    return normalizeText(
+      [
+        candidate && candidate.ariaLabel,
+        candidate && candidate.className,
+        candidate && candidate.dataSamPlacement,
+        candidate && candidate.id,
+        candidate && candidate.tagName,
+        candidate && candidate.title,
+      ].join(' '),
+    );
+  }
+
+  function isExplicitAdContainer(candidate) {
+    const identity = getContainerIdentityText(candidate);
+    return Boolean(
+      identity &&
+        (EXPLICIT_AD_CONTAINER_PATTERN.test(identity) ||
+          (candidate && candidate.dataSamPlacement) ||
+          /\bsam(?:Banner|Code)Unit/i.test(identity)),
+    );
+  }
+
+  function isBroadSiteContainer(candidate) {
+    const identity = getContainerIdentityText(candidate);
+    return Boolean(identity && BROAD_SITE_CONTAINER_PATTERN.test(identity));
+  }
+
+  function isCompactRemovalCandidate(candidate, text) {
+    const tagName = String((candidate && candidate.tagName) || '').toUpperCase();
+    if (REMOVABLE_RESOURCE_TAGS.has(tagName)) return true;
+
+    const childCount = toFiniteNumber(candidate && candidate.childCount);
+    const textLength = normalizeText(text).length;
+    return childCount <= 2 && textLength <= CONFIG.bannerTextMaxLength;
+  }
+
+  function classifyContainerRemoval(candidate) {
+    if (!candidate || typeof candidate !== 'object') return { removable: false, reason: 'empty' };
+    if (candidate.isRoot) return { removable: false, reason: 'protected-root' };
+    if (candidate.hasFormControl) return { removable: false, reason: 'form-control' };
+
+    const text = normalizeText(candidate.text || '');
+    const hasBlockedLink = Boolean(candidate.hasBlockedAdLink);
+    const hasBlockedText =
+      text.length > 0 && text.length <= CONFIG.bannerTextMaxLength && isBlockedBannerText(text);
+
+    if (isExplicitAdContainer(candidate)) {
+      if (hasBlockedLink) return { removable: true, reason: 'blocked-link-ad-container' };
+      if (hasBlockedText) return { removable: true, reason: 'banner-text-ad-container' };
+    }
+
+    if (isBroadSiteContainer(candidate)) {
+      if (hasBlockedLink) return { removable: false, reason: 'blocked-link-broad-site-container' };
+      if (hasBlockedText) return { removable: false, reason: 'banner-text-broad-site-container' };
+    }
+
+    if (hasBlockedLink) {
+      if (isCompactRemovalCandidate(candidate, text)) return { removable: true, reason: 'blocked-link-compact' };
+      return { removable: false, reason: 'blocked-link-generic-container' };
+    }
+
+    if (hasBlockedText) {
+      if (isCompactRemovalCandidate(candidate, text)) return { removable: true, reason: 'banner-text-compact' };
+      return { removable: false, reason: 'banner-text-generic-container' };
+    }
+
+    return { removable: false, reason: 'allowed' };
   }
 
   function toFiniteNumber(value) {
@@ -582,6 +658,7 @@
 
   const core = {
     classifyClickNavigation,
+    classifyContainerRemoval,
     classifyNavigationTarget,
     classifyImagePlacement,
     classifyVisualBannerPlacement,
@@ -639,15 +716,25 @@
     return Boolean(element && element.querySelector && element.querySelector('input, textarea, select, button'));
   }
 
-  function isSafeRemovalCandidate(element) {
-    if (!element || element === document.documentElement || element === document.body || element === document.head) {
-      return false;
-    }
-    if (hasFormControl(element)) return false;
+  function getContainerRemovalCandidate(element) {
+    if (!element || !element.getAttribute) return {};
+    return {
+      ariaLabel: element.getAttribute('aria-label') || '',
+      childCount: element.children ? element.children.length : 0,
+      className: element.getAttribute('class') || '',
+      dataSamPlacement: element.getAttribute('data-sam-placement') || '',
+      hasBlockedAdLink: hasBlockedAdLink(element),
+      hasFormControl: hasFormControl(element),
+      id: element.getAttribute('id') || '',
+      isRoot: element === document.documentElement || element === document.body || element === document.head,
+      tagName: element.tagName || '',
+      text: element.textContent || '',
+      title: element.getAttribute('title') || '',
+    };
+  }
 
-    const text = normalizeText(element.textContent || '');
-    if (hasBlockedAdLink(element)) return true;
-    return text.length > 0 && text.length <= CONFIG.bannerTextMaxLength && isBlockedBannerText(text);
+  function isSafeRemovalCandidate(element) {
+    return classifyContainerRemoval(getContainerRemovalCandidate(element)).removable;
   }
 
   function findAdContainer(element) {

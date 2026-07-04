@@ -151,6 +151,87 @@ test('classifies bottom linked wide banners as removable ad images', () => {
   );
 });
 
+test('does not remove broad SimpCity containers just because they contain ad scripts or ad text', () => {
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 7,
+      className: 'p-body',
+      hasBlockedAdLink: true,
+      tagName: 'DIV',
+      text: 'Avatar Borders are active and can be found under the Customize Profile page. Info and Links SimpCity News Rules FAQ.',
+    }),
+    { removable: false, reason: 'blocked-link-broad-site-container' },
+  );
+
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 3,
+      className: 'p-header-content',
+      hasBlockedAdLink: true,
+      tagName: 'DIV',
+      text: 'SimpCity header navigation and account controls',
+    }),
+    { removable: false, reason: 'blocked-link-broad-site-container' },
+  );
+
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 2,
+      className: 'block block--category block--category3',
+      hasBlockedAdLink: false,
+      tagName: 'DIV',
+      text: 'Info and Links SimpCity News Rules FAQ Create Your AI Cum Slut Generate your AI Trash Whore.',
+    }),
+    { removable: false, reason: 'banner-text-broad-site-container' },
+  );
+});
+
+test('still removes compact ad items and explicit ad containers', () => {
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 1,
+      className: 'p-navEl',
+      hasBlockedAdLink: true,
+      tagName: 'DIV',
+      text: 'AI PORN',
+    }),
+    { removable: true, reason: 'blocked-link-compact' },
+  );
+
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 1,
+      className: '',
+      hasBlockedAdLink: true,
+      tagName: 'SCRIPT',
+      text: '',
+    }),
+    { removable: true, reason: 'blocked-link-compact' },
+  );
+
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 2,
+      className: 'samBannerUnit',
+      hasBlockedAdLink: true,
+      tagName: 'DIV',
+      text: '',
+    }),
+    { removable: true, reason: 'blocked-link-ad-container' },
+  );
+
+  assert.deepEqual(
+    core.classifyContainerRemoval({
+      childCount: 1,
+      className: 'node node--id128 node--depth2 node--link',
+      hasBlockedAdLink: false,
+      tagName: 'DIV',
+      text: 'Create Your AI Cum Slut Generate your AI Trash Whore. Virtual chat and calls.',
+    }),
+    { removable: true, reason: 'banner-text-compact' },
+  );
+});
+
 test('classifies top-of-page background image banners as removable ads', () => {
   assert.deepEqual(
     core.classifyVisualBannerPlacement({

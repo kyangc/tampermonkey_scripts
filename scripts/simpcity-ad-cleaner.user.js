@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.1
+// @version      0.1.2
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -38,6 +38,7 @@
   };
 
   const state = {
+    clickGuardInstalled: false,
     cleanScheduled: false,
     observer: null,
   };
@@ -80,6 +81,15 @@
     /海賊王/,
     /脱衣/,
     /邂逅.*海洋/,
+  ];
+
+  const LIKELY_AD_NAVIGATION_PATTERNS = [
+    /(^|[./?&=_-])ad(?:s|v|vert|server|network|sterra)?($|[./?&=_-])/i,
+    /(^|[./?&=_-])advert(?:ise|ising|isement)?($|[./?&=_-])/i,
+    /(^|[./?&=_-])click(?:id|tag)?($|[./?&=_-])/i,
+    /(^|[./?&=_-])pop(?:up|under)?($|[./?&=_-])/i,
+    /(^|[./?&=_-])promo(?:tion)?($|[./?&=_-])/i,
+    /[?&]zone_?id=/i,
   ];
 
   const AD_CONTAINER_SELECTORS = [
@@ -193,6 +203,24 @@
     return !isSameSiteUrl(url.href, baseUrl);
   }
 
+  function isSamePageHashUrl(url, baseUrl) {
+    const base = parseUrl(baseUrl || 'https://simpcity.cr/');
+    if (!url || !base) return false;
+    return (
+      normalizeHost(url.hostname) === normalizeHost(base.hostname) &&
+      url.pathname === base.pathname &&
+      url.search === base.search &&
+      Boolean(url.hash)
+    );
+  }
+
+  function isLikelyAdNavigationUrl(value, baseUrl) {
+    const url = parseUrl(value, baseUrl);
+    if (!url || !/^https?:$/.test(url.protocol) || !isExternalHttpUrl(url.href, baseUrl)) return false;
+    const text = `${normalizeHost(url.hostname)}${url.pathname}${url.search}`.toLowerCase();
+    return LIKELY_AD_NAVIGATION_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
   function getImageMetric(image, keys) {
     for (const key of keys) {
       const value = image && image[key];
@@ -280,7 +308,31 @@
     if (isBlockedAdUrl(value, baseUrl)) {
       return { blocked: true, reason: 'blocked-host' };
     }
+    if (isLikelyAdNavigationUrl(value, baseUrl)) {
+      return { blocked: true, reason: 'likely-ad-url' };
+    }
     return { blocked: false, reason: 'allowed' };
+  }
+
+  function classifyClickNavigation(link, baseUrl) {
+    const href = link && link.href != null ? String(link.href).trim() : '';
+    if (!href) return { action: 'allow', reason: 'empty' };
+
+    const url = parseUrl(href, baseUrl || 'https://simpcity.cr/');
+    if (!url || !/^https?:$/.test(url.protocol) || isSamePageHashUrl(url, baseUrl || 'https://simpcity.cr/')) {
+      return { action: 'allow', reason: 'same-page-or-script' };
+    }
+
+    const navigation = classifyNavigationTarget(url.href, baseUrl);
+    if (navigation.blocked) {
+      return { action: 'block', reason: navigation.reason };
+    }
+
+    if (link && link.dataXfClick) {
+      return { action: 'allow', reason: 'scripted-link' };
+    }
+
+    return { action: 'isolate', reason: 'real-link' };
   }
 
   function getStyleText() {
@@ -302,6 +354,7 @@
   }
 
   const core = {
+    classifyClickNavigation,
     classifyNavigationTarget,
     classifyImagePlacement,
     getStyleText,
@@ -309,6 +362,7 @@
     isBlockedAdUrl,
     isBlockedBannerText,
     isBlockedImageText,
+    isLikelyAdNavigationUrl,
     normalizeHost,
     normalizeText,
   };
@@ -484,13 +538,23 @@
     );
   }
 
-  function findEventAdTarget(event) {
+  function getElementNavigationInfo(element) {
+    if (!element || !element.getAttribute) return { href: '' };
+    return {
+      dataXfClick: element.getAttribute('data-xf-click') || '',
+      href: getElementNavigationTarget(element),
+    };
+  }
+
+  function findEventNavigationDecision(event) {
     for (const node of getEventPath(event)) {
       if (!node || node.nodeType !== 1) continue;
-      if (hasBlockedHref(node) || isSafeRemovalCandidate(node)) return node;
+      if (hasBlockedHref(node) || isSafeRemovalCandidate(node)) {
+        return { action: 'block', reason: 'blocked-target', target: node };
+      }
       if (node.matches && node.matches('a[href], [data-href], [data-url]')) {
-        const target = getElementNavigationTarget(node);
-        if (classifyNavigationTarget(target, getLocationHref()).blocked) return node;
+        const decision = classifyClickNavigation(getElementNavigationInfo(node), getLocationHref());
+        if (decision.action !== 'allow') return { ...decision, target: node };
       }
     }
     return null;
@@ -504,15 +568,32 @@
     scheduleClean();
   }
 
+  function isolateLinkEvent(event) {
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    scheduleClean();
+  }
+
   function installClickGuard() {
+    if (state.clickGuardInstalled) return;
+    state.clickGuardInstalled = true;
+
     const guard = (event) => {
-      const target = findEventAdTarget(event);
-      if (!target) return;
-      stopAdEvent(event, target);
+      const decision = findEventNavigationDecision(event);
+      if (!decision) return;
+      if (decision.action === 'block') {
+        stopAdEvent(event, decision.target);
+        return;
+      }
+      if (decision.action === 'isolate') {
+        isolateLinkEvent(event);
+      }
     };
 
-    for (const type of CLICK_EVENT_TYPES) {
-      document.addEventListener(type, guard, true);
+    for (const target of [pageWindow, document]) {
+      for (const type of CLICK_EVENT_TYPES) {
+        target.addEventListener(type, guard, true);
+      }
     }
   }
 
@@ -531,6 +612,56 @@
 
     Object.defineProperty(guardedOpen, '__sacGuarded', { value: true });
     pageWindow.open = guardedOpen;
+  }
+
+  function installLocationGuard() {
+    const location = pageWindow.location;
+    if (!location || location.__sacGuarded) return;
+
+    for (const method of ['assign', 'replace']) {
+      const native = location[method];
+      if (typeof native !== 'function') continue;
+
+      try {
+        Object.defineProperty(location, method, {
+          configurable: true,
+          value(url) {
+            const decision = classifyNavigationTarget(url, getLocationHref());
+            if (decision.blocked) {
+              scheduleClean();
+              return undefined;
+            }
+            return native.call(this, url);
+          },
+        });
+      } catch (_error) {
+        // Some browsers expose Location methods as non-configurable; click isolation still handles user clicks.
+      }
+    }
+
+    try {
+      Object.defineProperty(location, '__sacGuarded', { value: true });
+    } catch (_error) {
+      // Ignore non-extensible Location objects.
+    }
+  }
+
+  function installAnchorClickGuard() {
+    const proto = pageWindow.HTMLAnchorElement && pageWindow.HTMLAnchorElement.prototype;
+    if (!proto || proto.__sacGuarded || typeof proto.click !== 'function') return;
+
+    const nativeClick = proto.click;
+    proto.click = function guardedAnchorClick() {
+      const decision = classifyClickNavigation(getElementNavigationInfo(this), getLocationHref());
+      if (decision.action === 'block') {
+        removeElement(this);
+        scheduleClean();
+        return undefined;
+      }
+      return nativeClick.apply(this, arguments);
+    };
+
+    Object.defineProperty(proto, '__sacGuarded', { value: true });
   }
 
   function hasBlockedCode(source) {
@@ -603,7 +734,10 @@
   }
 
   installWindowOpenGuard();
+  installLocationGuard();
+  installAnchorClickGuard();
   installEventListenerGuard();
+  installClickGuard();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initDomFeatures, { once: true });

@@ -26,7 +26,23 @@ test('decides whether a popup/navigation target should be blocked', () => {
     blocked: true,
     reason: 'blocked-host',
   });
+  assert.deepEqual(core.classifyNavigationTarget('https://adv.example.test/click?zone=123'), {
+    blocked: true,
+    reason: 'likely-ad-url',
+  });
+  assert.deepEqual(core.classifyNavigationTarget('https://cdn.example.test/popunder?zone=123'), {
+    blocked: true,
+    reason: 'likely-ad-url',
+  });
   assert.deepEqual(core.classifyNavigationTarget('https://simpcity.cr/whats-new/posts/'), {
+    blocked: false,
+    reason: 'allowed',
+  });
+  assert.deepEqual(core.classifyNavigationTarget('https://pixhost.to/show/123/example'), {
+    blocked: false,
+    reason: 'allowed',
+  });
+  assert.deepEqual(core.classifyNavigationTarget('https://example.com/article?utm_campaign=forum'), {
     blocked: false,
     reason: 'allowed',
   });
@@ -34,6 +50,35 @@ test('decides whether a popup/navigation target should be blocked', () => {
     blocked: false,
     reason: 'empty',
   });
+});
+
+test('isolates real link clicks from site-level ad hooks while preserving overlays', () => {
+  assert.deepEqual(
+    core.classifyClickNavigation({
+      href: 'https://simpcity.cr/threads/example.123/',
+    }),
+    { action: 'isolate', reason: 'real-link' },
+  );
+  assert.deepEqual(
+    core.classifyClickNavigation({
+      dataXfClick: 'overlay',
+      href: 'https://adv.example.test/click?zone=123',
+    }),
+    { action: 'block', reason: 'likely-ad-url' },
+  );
+  assert.deepEqual(
+    core.classifyClickNavigation({
+      dataXfClick: 'overlay',
+      href: 'https://simpcity.cr/login/',
+    }),
+    { action: 'allow', reason: 'scripted-link' },
+  );
+  assert.deepEqual(
+    core.classifyClickNavigation({
+      href: '#top',
+    }),
+    { action: 'allow', reason: 'same-page-or-script' },
+  );
 });
 
 test('classifies top-of-page wide game banners as removable ad images', () => {

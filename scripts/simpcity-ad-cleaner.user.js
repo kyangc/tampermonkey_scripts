@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.3
+// @version      0.1.4
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -29,6 +29,7 @@
       'theporndude.com',
       'trafficjunky.net',
     ],
+    mediaFrameHostSuffixes: ['turbo.cr'],
     topBannerMaxTop: 220,
     wideBannerMaxHeight: 160,
     wideBannerMinAspectRatio: 2.2,
@@ -348,6 +349,45 @@
     return { blocked: false, reason: 'allowed' };
   }
 
+  function getMediaFrameSandboxValue() {
+    return 'allow-forms allow-presentation allow-same-origin allow-scripts';
+  }
+
+  function isKnownMediaFrameHost(value, baseUrl) {
+    const url = parseUrl(value, baseUrl);
+    if (!url || !/^https?:$/.test(url.protocol)) return false;
+    const host = normalizeHost(url.hostname);
+    return CONFIG.mediaFrameHostSuffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  }
+
+  function isMediaFrameShape(frame) {
+    const width = getImageMetric(frame, ['width', 'clientWidth', 'offsetWidth']);
+    const height = getImageMetric(frame, ['height', 'clientHeight', 'offsetHeight']);
+    return width >= 280 && height >= 150;
+  }
+
+  function classifyFramePlacement(frame, baseUrl) {
+    if (!frame || typeof frame !== 'object') return { action: 'allow', reason: 'empty' };
+    const src = String(frame.src || '').trim();
+    if (!src) return { action: 'allow', reason: 'empty' };
+
+    const navigation = classifyNavigationTarget(src, baseUrl);
+    if (navigation.blocked) return { action: 'remove', reason: navigation.reason };
+
+    if (isSameSiteUrl(src, baseUrl || 'https://simpcity.cr/')) return { action: 'allow', reason: 'same-site' };
+
+    const className = String(frame.className || '');
+    if (
+      isKnownMediaFrameHost(src, baseUrl) ||
+      /\b(?:embed|media|player|saint-iframe|video)\b/i.test(className) ||
+      isMediaFrameShape(frame)
+    ) {
+      return { action: 'sandbox', reason: 'third-party-media-frame' };
+    }
+
+    return { action: 'allow', reason: 'external-frame' };
+  }
+
   function getImagePlacement(image) {
     if (!image || !image.getAttribute) return {};
     const rect = typeof image.getBoundingClientRect === 'function' ? image.getBoundingClientRect() : {};
@@ -428,6 +468,8 @@
     classifyNavigationTarget,
     classifyImagePlacement,
     classifyVisualBannerPlacement,
+    classifyFramePlacement,
+    getMediaFrameSandboxValue,
     getStyleText,
     isBlockedAdHost,
     isBlockedAdUrl,
@@ -612,6 +654,50 @@
     return removed;
   }
 
+  function getFramePlacement(frame) {
+    if (!frame || !frame.getAttribute) return {};
+    return {
+      className: frame.getAttribute('class') || '',
+      height: frame.height || frame.clientHeight || frame.offsetHeight,
+      sandbox: frame.getAttribute('sandbox') || '',
+      src: frame.getAttribute('src') || '',
+      width: frame.width || frame.clientWidth || frame.offsetWidth,
+    };
+  }
+
+  function sandboxMediaFrame(frame) {
+    if (!frame || !frame.setAttribute) return false;
+    const sandbox = getMediaFrameSandboxValue();
+    if (frame.getAttribute('sandbox') === sandbox && frame.dataset.sacSandboxed === '1') return false;
+
+    const src = frame.getAttribute('src') || '';
+    frame.setAttribute('sandbox', sandbox);
+    frame.dataset.sacSandboxed = '1';
+
+    if (src && frame.dataset.sacSandboxReloaded !== '1') {
+      frame.dataset.sacSandboxReloaded = '1';
+      frame.setAttribute('src', src);
+    }
+    return true;
+  }
+
+  function cleanFramePopups(root) {
+    if (!root || !root.querySelectorAll) return 0;
+
+    let cleaned = 0;
+    for (const frame of root.querySelectorAll('iframe[src]')) {
+      const decision = classifyFramePlacement(getFramePlacement(frame), getLocationHref());
+      if (decision.action === 'remove') {
+        if (removeElement(frame)) cleaned += 1;
+        continue;
+      }
+      if (decision.action === 'sandbox') {
+        if (sandboxMediaFrame(frame)) cleaned += 1;
+      }
+    }
+    return cleaned;
+  }
+
   function cleanInlineHandlers(root) {
     if (!root || !root.querySelectorAll) return 0;
 
@@ -635,6 +721,7 @@
     cleanLinkedAds(root);
     cleanImageBanners(root);
     cleanVisualBanners(root);
+    cleanFramePopups(root);
     cleanTextBanners(root);
   }
 

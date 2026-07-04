@@ -46,6 +46,10 @@ test('decides whether a popup/navigation target should be blocked', () => {
     blocked: false,
     reason: 'allowed',
   });
+  assert.deepEqual(core.classifyNavigationTarget('https://www.youtube.com/watch?v=N7zxBYs6U3c'), {
+    blocked: false,
+    reason: 'allowed',
+  });
   assert.deepEqual(core.classifyNavigationTarget('', 'https://simpcity.cr/'), {
     blocked: false,
     reason: 'empty',
@@ -162,4 +166,42 @@ test('classifies top-of-page background image banners as removable ads', () => {
     }),
     { blocked: true, reason: 'top-wide-background' },
   );
+});
+
+test('sandboxes third-party media iframes without allowing popups', () => {
+  assert.deepEqual(
+    core.classifyFramePlacement({
+      className: 'saint-iframe',
+      height: 271,
+      sandbox: '',
+      src: 'https://turbo.cr/embed/QbNWKX4Hmb8CW',
+      width: 483,
+    }),
+    { action: 'sandbox', reason: 'third-party-media-frame' },
+  );
+
+  assert.deepEqual(
+    core.classifyFramePlacement({
+      height: 90,
+      sandbox: '',
+      src: 'https://cdn.example.test/adserver/frame.html?zone_id=72890',
+      width: 728,
+    }),
+    { action: 'remove', reason: 'likely-ad-url' },
+  );
+
+  assert.deepEqual(
+    core.classifyFramePlacement({
+      height: 120,
+      sandbox: '',
+      src: 'https://simpcity.cr/embed/local',
+      width: 320,
+    }),
+    { action: 'allow', reason: 'same-site' },
+  );
+
+  assert.equal(core.getMediaFrameSandboxValue().includes('allow-scripts'), true);
+  assert.equal(core.getMediaFrameSandboxValue().includes('allow-same-origin'), true);
+  assert.equal(core.getMediaFrameSandboxValue().includes('allow-popups'), false);
+  assert.equal(core.getMediaFrameSandboxValue().includes('allow-top-navigation'), false);
 });

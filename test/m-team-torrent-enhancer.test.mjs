@@ -89,6 +89,24 @@ test('does not mark torrents older than the new-hot window even when very active
   assert.equal(score.alpha, 0);
 });
 
+test('does not mark just-published torrents as hot without enough activity', () => {
+  const freshButNotHot = {
+    createdDate: '2026-07-04T11:20:00+08:00',
+    status: {
+      seeders: '20',
+      leechers: '3',
+      comments: '0',
+    },
+  };
+
+  const score = core.computeHotnessScore(freshButNotHot, NOW);
+
+  assert.equal(score.scores.recency, 1);
+  assert.ok(score.activityScore < score.minActivityScore);
+  assert.equal(score.score, 0);
+  assert.equal(score.alpha, 0);
+});
+
 test('marks mid-window torrents with very high seeders as hot even with low leechers', () => {
   const highSeederLowLeecher = {
     createdDate: '2026-06-18T12:00:00+08:00',
@@ -171,7 +189,8 @@ test('treats moderately recent active torrents as hot', () => {
 
   const score = core.computeHotnessScore(moderatelyRecentActive, NOW);
 
-  assert.ok(score.score > 0.16, `expected moderately recent active torrent to pass hot threshold, got ${score.score}`);
+  assert.ok(score.activityScore >= score.minActivityScore);
+  assert.ok(score.score >= 0.45, `expected moderately recent active torrent to pass hot threshold, got ${score.score}`);
   assert.ok(score.alpha > 0, 'expected visible hot color');
 });
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         M-Team Torrent List Enhancer
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.7
+// @version      0.1.8
 // @description  Highlight new hot M-Team torrents and dim viewed torrent rows.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -23,6 +23,7 @@
     hotSeederScale: 1500,
     hotLeecherScale: 200,
     hotCommentScale: 50,
+    hotMinActivityScore: 0.4,
     hotWeights: {
       recency: 0.35,
       seeders: 0.25,
@@ -104,6 +105,8 @@
         comments: 0,
         completed: 0,
         leechers: 0,
+        minActivityScore: CONFIG.hotMinActivityScore,
+        passesActivityGate: false,
         score: 0,
         seeders: 0,
       };
@@ -126,6 +129,16 @@
     const leecherScore = clamp(Math.log1p(leechers) / Math.log1p(CONFIG.hotLeecherScale), 0, 1);
     const commentScore = clamp(Math.log1p(comments) / Math.log1p(CONFIG.hotCommentScale), 0, 1);
     const { hotWeights: weights } = CONFIG;
+    const activityWeightTotal = weights.seeders + weights.leechers + weights.comments;
+    const activityScore = clamp(
+      activityWeightTotal > 0
+        ? (seederScore * weights.seeders + leecherScore * weights.leechers + commentScore * weights.comments) /
+            activityWeightTotal
+        : 0,
+      0,
+      1,
+    );
+    const passesActivityGate = activityScore >= CONFIG.hotMinActivityScore;
     const weightedScore = clamp(
       recencyScore * weights.recency +
         seederScore * weights.seeders +
@@ -134,15 +147,18 @@
       0,
       1,
     );
-    const score = isInsideNewHotWindow ? weightedScore : 0;
+    const score = isInsideNewHotWindow && passesActivityGate ? weightedScore : 0;
     const alpha = score < CONFIG.hotMinScore ? 0 : clamp(0.1 + score * 0.38, 0.14, 0.48);
 
     return {
+      activityScore: round(activityScore),
       ageDays: round(ageDays, 2),
       alpha: round(alpha),
       comments,
       completed,
       leechers,
+      minActivityScore: CONFIG.hotMinActivityScore,
+      passesActivityGate,
       scores: {
         comments: round(commentScore),
         leechers: round(leecherScore),
@@ -430,6 +446,7 @@
       const hotness = visualState.hotness;
       row.title = [
         `新热指数 ${Math.round(hotness.score * 100)}`,
+        `活跃度 ${Math.round(hotness.activityScore * 100)}/${Math.round(hotness.minActivityScore * 100)}`,
         `发布 ${hotness.ageDays ?? '?'} 天`,
         `做种 ${hotness.seeders}`,
         `下载 ${hotness.leechers}`,

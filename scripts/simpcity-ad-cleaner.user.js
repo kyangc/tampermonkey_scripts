@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Ad Cleaner
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.2
+// @version      0.1.3
 // @description  Remove SimpCity click-ad redirects and noisy banner placements.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -32,6 +32,7 @@
     topBannerMaxTop: 220,
     wideBannerMaxHeight: 160,
     wideBannerMinAspectRatio: 2.2,
+    wideBackgroundMinWidth: 600,
     wideBannerMinHeight: 40,
     wideBannerMinWidth: 220,
     storageCleanDelayMs: 50,
@@ -70,8 +71,11 @@
 
   const IMAGE_BANNER_PATTERNS = [
     /18\+/i,
+    /\bjav\s*hd\b/i,
+    /\bjavhd\b/i,
     /\bclick[-_ ]?ad\b/i,
     /\bporn[-_ ]?game\b/i,
+    /\bwatch\s+now\b/i,
     /全次元/,
     /成人/,
     /开始游戏/,
@@ -242,6 +246,18 @@
     );
   }
 
+  function extractCssUrls(value) {
+    const text = String(value || '');
+    const urls = [];
+    const pattern = /url\((?:"([^"]+)"|'([^']+)'|([^'")]+))\)/gi;
+    let match = pattern.exec(text);
+    while (match) {
+      urls.push((match[1] || match[2] || match[3] || '').trim());
+      match = pattern.exec(text);
+    }
+    return urls.filter(Boolean);
+  }
+
   function isWideBannerShape(image) {
     const width = getImageMetric(image, ['width', 'clientWidth', 'naturalWidth', 'offsetWidth']);
     const height = getImageMetric(image, ['height', 'clientHeight', 'naturalHeight', 'offsetHeight']);
@@ -273,6 +289,60 @@
 
     if (isTopPlacement && isWideBanner && hasOffSiteTarget) {
       return { blocked: true, reason: 'top-wide-linked-image' };
+    }
+
+    return { blocked: false, reason: 'allowed' };
+  }
+
+  function getVisualSearchText(placement) {
+    return normalizeText(
+      [
+        placement && placement.ariaLabel,
+        placement && placement.backgroundImage,
+        placement && placement.href,
+        placement && placement.src,
+        placement && placement.text,
+        placement && placement.title,
+      ].join(' '),
+    );
+  }
+
+  function getVisualAssetUrls(placement) {
+    return [
+      placement && placement.href,
+      placement && placement.src,
+      ...extractCssUrls(placement && placement.backgroundImage),
+    ].filter(Boolean);
+  }
+
+  function classifyVisualBannerPlacement(placement, baseUrl) {
+    if (!placement || typeof placement !== 'object') return { blocked: false, reason: 'empty' };
+
+    const hasTopMetric =
+      Object.prototype.hasOwnProperty.call(placement, 'top') && placement.top != null && placement.top !== '';
+    const top = toFiniteNumber(placement.top);
+    const isTopPlacement = hasTopMetric && top >= 0 && top <= CONFIG.topBannerMaxTop;
+    const isWideBanner = isWideBannerShape(placement);
+    const assetUrls = getVisualAssetUrls(placement);
+    const hasOffSiteTarget = assetUrls.some((url) => isExternalHttpUrl(url, baseUrl));
+
+    if (isBlockedImageText(getVisualSearchText(placement)) && (isTopPlacement || (isWideBanner && hasOffSiteTarget))) {
+      return { blocked: true, reason: 'ad-visual-text' };
+    }
+
+    for (const url of assetUrls) {
+      const decision = classifyNavigationTarget(url, baseUrl);
+      if (decision.blocked) return decision;
+    }
+
+    const width = getImageMetric(placement, ['width', 'clientWidth', 'naturalWidth', 'offsetWidth']);
+    if (
+      isTopPlacement &&
+      isWideBanner &&
+      placement.backgroundImage &&
+      (hasOffSiteTarget || width >= CONFIG.wideBackgroundMinWidth)
+    ) {
+      return { blocked: true, reason: 'top-wide-background' };
     }
 
     return { blocked: false, reason: 'allowed' };
@@ -357,6 +427,7 @@
     classifyClickNavigation,
     classifyNavigationTarget,
     classifyImagePlacement,
+    classifyVisualBannerPlacement,
     getStyleText,
     isBlockedAdHost,
     isBlockedAdUrl,
@@ -481,6 +552,66 @@
     return removed;
   }
 
+  function getElementBackgroundImage(element) {
+    const inlineBackground = element && element.style ? element.style.backgroundImage : '';
+    if (inlineBackground && inlineBackground !== 'none') return inlineBackground;
+    try {
+      const style = pageWindow.getComputedStyle ? pageWindow.getComputedStyle(element) : null;
+      return style && style.backgroundImage && style.backgroundImage !== 'none' ? style.backgroundImage : '';
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function getVisualBannerPlacement(element) {
+    if (!element || !element.getAttribute) return {};
+    const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : {};
+    const link = element.closest ? element.closest('a[href], [data-href], [data-url]') : null;
+    return {
+      ariaLabel: element.getAttribute('aria-label') || '',
+      backgroundImage: getElementBackgroundImage(element),
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      height: rect.height || element.offsetHeight,
+      href:
+        (link &&
+          (link.getAttribute('href') || link.getAttribute('data-href') || link.getAttribute('data-url') || '')) ||
+        element.getAttribute('href') ||
+        element.getAttribute('data-href') ||
+        element.getAttribute('data-url') ||
+        '',
+      src: element.getAttribute('src') || '',
+      text: element.textContent || '',
+      title: element.getAttribute('title') || '',
+      top: rect.top,
+      width: rect.width || element.offsetWidth,
+    };
+  }
+
+  function cleanVisualBanners(root) {
+    if (!root || !root.querySelectorAll) return 0;
+
+    let removed = 0;
+    const selector = [
+      'a[href]',
+      '[data-href]',
+      '[data-url]',
+      '[style*="background" i]',
+      '[class*="banner" i]',
+      '[id*="banner" i]',
+      '[class*="advert" i]',
+      '[id*="advert" i]',
+      'iframe[src]',
+    ].join(',');
+
+    for (const element of root.querySelectorAll(selector)) {
+      const decision = classifyVisualBannerPlacement(getVisualBannerPlacement(element), getLocationHref());
+      if (!decision.blocked) continue;
+      if (removeElement(element)) removed += 1;
+    }
+    return removed;
+  }
+
   function cleanInlineHandlers(root) {
     if (!root || !root.querySelectorAll) return 0;
 
@@ -503,6 +634,7 @@
     cleanInlineHandlers(root);
     cleanLinkedAds(root);
     cleanImageBanners(root);
+    cleanVisualBanners(root);
     cleanTextBanners(root);
   }
 

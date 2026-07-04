@@ -117,3 +117,49 @@ test('classifies top-of-page wide game banners as removable ad images', () => {
     { blocked: false, reason: 'allowed' },
   );
 });
+
+test('classifies top-of-page background image banners as removable ads', () => {
+  assert.deepEqual(
+    core.classifyVisualBannerPlacement({
+      backgroundImage: 'url("https://ads.example.test/javhd-watch-now-728x90.jpg")',
+      height: 90,
+      href: 'https://promo.example.test/click',
+      text: 'JAV HD WATCH NOW',
+      top: 32,
+      width: 728,
+    }),
+    { blocked: true, reason: 'ad-visual-text' },
+  );
+
+  assert.deepEqual(
+    core.classifyVisualBannerPlacement({
+      backgroundImage: 'url("https://simpcity.cr/styles/logo.png")',
+      height: 80,
+      href: 'https://simpcity.cr/',
+      text: 'SimpCity Forums',
+      top: 24,
+      width: 360,
+    }),
+    { blocked: false, reason: 'allowed' },
+  );
+
+  assert.deepEqual(
+    core.classifyVisualBannerPlacement({
+      height: 90,
+      src: 'https://cdn.example.test/adserver/frame.html?zone_id=72890',
+      top: 32,
+      width: 728,
+    }),
+    { blocked: true, reason: 'likely-ad-url' },
+  );
+
+  assert.deepEqual(
+    core.classifyVisualBannerPlacement({
+      backgroundImage: 'url("https://simpcity.cr/data/banners/6f2a9.jpg")',
+      height: 90,
+      top: 32,
+      width: 728,
+    }),
+    { blocked: true, reason: 'top-wide-background' },
+  );
+});

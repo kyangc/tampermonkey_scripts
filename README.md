@@ -33,6 +33,21 @@
 - `https://turbo.cr/embed/*`
 - `https://www.turbo.cr/embed/*`
 
+### Manga18fx 广告清理
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/manga18fx-ad-cleaner.user.js)
+
+功能：
+
+- 隐藏 Manga18fx 首页、详情页和章节页里的 `kadx` banner 广告位。
+- 清理外部广告脚本插入的漂浮视频广告、点击遮罩和追踪 iframe。
+- 关闭反广告拦截提示弹窗，但保留年龄确认弹窗。
+
+适用页面：
+
+- `https://manga18fx.com/*`
+- `https://www.manga18fx.com/*`
+
 安装方式：
 
 1. 浏览器安装 Tampermonkey 扩展。

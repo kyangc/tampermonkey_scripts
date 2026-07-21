@@ -514,7 +514,6 @@ test('adds a two-line source guide and right-aligned QR area for the copied twee
   assert.equal(layout.sourceGuide.label, '扫码查看详情');
   assert.equal(layout.sourceGuide.url, statusUrl);
   assert.equal(layout.sourceGuide.rect.y > layout.card.y + layout.card.height, true);
-  assert.equal(layout.sourceGuide.textX, layout.card.x);
   assert.equal(
     layout.sourceGuide.qrRect.x + layout.sourceGuide.qrRect.width,
     layout.card.x + layout.card.width,
@@ -524,6 +523,24 @@ test('adds a two-line source guide and right-aligned QR area for the copied twee
     layout.sourceGuide.rect.y + layout.sourceGuide.rect.height / 2,
   );
   assert.equal(layout.canvasHeight > layout.sourceGuide.rect.y + layout.sourceGuide.rect.height, true);
+});
+
+test('balances the source guide text inset with the visible QR right inset', () => {
+  const layout = core.buildCardLayout(
+    { text: 'Open the original post', statusUrl: 'https://x.com/ada_dev/status/1234567890' },
+    (value) => Array.from(value).length * 20,
+  );
+
+  for (const moduleCount of [29, 33, 37]) {
+    const qrRender = core.getQrRenderConfig(moduleCount, layout.sourceGuide.qrRect);
+    const textX = core.getSourceGuideTextX(layout.sourceGuide, moduleCount);
+    const textLeftInset = textX - layout.card.x;
+    const qrVisibleRightInset = layout.card.x + layout.card.width
+      - (qrRender.originX + qrRender.codeSize);
+
+    assert.equal(textLeftInset, qrVisibleRightInset);
+    assert.ok(textLeftInset > 0);
+  }
 });
 
 test('ends the shadowed card at the date and draws the source guide without a panel', () => {

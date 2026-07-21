@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.2
+// @version      0.3.3
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -676,7 +676,6 @@
             label: '扫码查看详情',
             url: sourceUrl,
             rect,
-            textX: rect.x,
             labelBaselineY: rect.y + 52,
             urlBaselineY: rect.y + 98,
             qrRect: {
@@ -846,6 +845,14 @@
     };
   }
 
+  function getSourceGuideTextX(sourceGuide, moduleCount) {
+    const qrRender = getQrRenderConfig(moduleCount, sourceGuide.qrRect);
+    const qrVisibleRight = qrRender.originX + qrRender.codeSize;
+    const qrVisibleRightInset = sourceGuide.qrRect.x + sourceGuide.qrRect.width
+      - qrVisibleRight;
+    return sourceGuide.rect.x + qrVisibleRightInset;
+  }
+
   const core = {
     buildCardLayout,
     createQrMatrix,
@@ -857,6 +864,7 @@
     getMediaRenderConfig,
     getMediaTileRadii,
     getQrRenderConfig,
+    getSourceGuideTextX,
     getShareMenuStyleText,
     getTweetTextSegments,
     getBrandLogoConfig,
@@ -1356,19 +1364,20 @@
   function drawSourceGuide(context, sourceGuide, qrMatrix) {
     if (!sourceGuide || !qrMatrix.length) return;
     const { qrRect } = sourceGuide;
+    const textX = getSourceGuideTextX(sourceGuide, qrMatrix.length);
     context.save();
 
     context.textAlign = 'left';
     context.textBaseline = 'alphabetic';
     context.fillStyle = '#1d9bf0';
     context.font = `700 30px ${FONT_STACK}`;
-    context.fillText(sourceGuide.label, sourceGuide.textX, sourceGuide.labelBaselineY);
+    context.fillText(sourceGuide.label, textX, sourceGuide.labelBaselineY);
 
     context.fillStyle = '#536471';
     context.font = `400 23px ${FONT_STACK}`;
     context.fillText(
-      fitCanvasText(context, sourceGuide.url, qrRect.x - sourceGuide.textX - 36),
-      sourceGuide.textX,
+      fitCanvasText(context, sourceGuide.url, qrRect.x - textX - 36),
+      textX,
       sourceGuide.urlBaselineY,
     );
 

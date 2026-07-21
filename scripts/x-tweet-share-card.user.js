@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.3
+// @version      0.2.0
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -50,7 +50,7 @@
     }
   }
 
-  function normalizeTweetData(value = {}) {
+  function normalizeTweetData(value = {}, includeContext = true) {
     const mediaUrls = [];
     for (const rawUrl of Array.isArray(value.mediaUrls) ? value.mediaUrls : []) {
       const url = normalizeMediaUrl(rawUrl);
@@ -65,6 +65,15 @@
     const publishedAt = Number.isFinite(Date.parse(value.publishedAt || ''))
       ? new Date(value.publishedAt).toISOString()
       : '';
+    const contextKind = value.context?.kind;
+    const context = includeContext
+      && (contextKind === 'quote' || contextKind === 'reply')
+      && value.context?.tweet
+      ? {
+          kind: contextKind,
+          tweet: normalizeTweetData(value.context.tweet, false),
+        }
+      : null;
 
     return {
       authorName: String(value.authorName || '').trim(),
@@ -76,6 +85,7 @@
       publishedAt,
       statusUrl: normalizeStatusUrl(value.statusUrl),
       videoPosterUrl,
+      context,
     };
   }
 
@@ -96,9 +106,26 @@
     return match ? match[1] : '';
   }
 
-  function extractVideoPosterUrl(article) {
+  function queryScopedNodes(root, selector, excludedRoots = []) {
+    if (!root || typeof root.querySelector !== 'function') return [];
+    const queried = typeof root.querySelectorAll === 'function'
+      ? Array.from(root.querySelectorAll(selector))
+      : [];
+    const nodes = queried.length ? queried : [root.querySelector(selector)].filter(Boolean);
+    return nodes.filter((node) => !excludedRoots.some((excludedRoot) => {
+      if (!excludedRoot) return false;
+      if (typeof excludedRoot.contains === 'function' && excludedRoot.contains(node)) return true;
+      return node?.closest?.('[role="link"]') === excludedRoot;
+    }));
+  }
+
+  function queryScopedNode(root, selector, excludedRoots = []) {
+    return queryScopedNodes(root, selector, excludedRoots)[0] || null;
+  }
+
+  function extractVideoPosterUrl(article, excludedRoots = []) {
     if (!article || typeof article.querySelector !== 'function') return '';
-    const player = article.querySelector('[data-testid="videoPlayer"]');
+    const player = queryScopedNode(article, '[data-testid="videoPlayer"]', excludedRoots);
     if (!player) return '';
 
     const video = typeof player.querySelector === 'function'
@@ -124,6 +151,53 @@
     }
 
     return '';
+  }
+
+  function findQuotedTweetRoot(article) {
+    const nameBlocks = queryScopedNodes(
+      article,
+      '[data-testid="User-Name"], [data-testid="UserName"]',
+    );
+    for (const nameBlock of nameBlocks.slice(1)) {
+      const candidate = nameBlock?.closest?.('[role="link"]');
+      if (candidate && candidate !== article) return candidate;
+    }
+
+    const textNodes = queryScopedNodes(article, '[data-testid="tweetText"]');
+    for (const textNode of textNodes.slice(1)) {
+      const candidate = textNode?.closest?.('[role="link"]');
+      if (candidate?.querySelector?.('[data-testid="User-Name"], [data-testid="UserName"]')) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  function getStatusId(value) {
+    return String(value || '').match(/\/status\/(\d+)/)?.[1] || '';
+  }
+
+  function findReplyContextArticle(article, pageUrl, currentStatusUrl) {
+    const pageStatusId = getStatusId(pageUrl);
+    const currentStatusId = getStatusId(currentStatusUrl);
+    const ownerDocument = article?.ownerDocument;
+    if (!pageStatusId || !currentStatusId || typeof ownerDocument?.querySelectorAll !== 'function') {
+      return null;
+    }
+
+    const articles = Array.from(ownerDocument.querySelectorAll('article[data-testid="tweet"]'));
+    const currentIndex = articles.indexOf(article);
+    if (currentIndex < 0) return null;
+
+    if (currentStatusId === pageStatusId) {
+      return currentIndex > 0 ? articles[currentIndex - 1] : null;
+    }
+
+    return articles.find((candidate) => {
+      const quoteRoot = findQuotedTweetRoot(candidate);
+      const candidateStatusUrl = extractTweetFields(candidate, quoteRoot ? [quoteRoot] : []).statusUrl;
+      return getStatusId(candidateStatusUrl) === pageStatusId;
+    }) || null;
   }
 
   function wrapText(value, maxWidth, measureText) {
@@ -208,11 +282,30 @@
     ];
   }
 
-  function extractTweetData(article) {
-    if (!article || typeof article.querySelector !== 'function') return normalizeTweetData();
+  function getMediaTileRadii(count, index, radius = 22) {
+    const none = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 };
+    const all = { topLeft: radius, topRight: radius, bottomRight: radius, bottomLeft: radius };
+    if (count <= 1) return all;
+    if (count === 2) {
+      return index === 0
+        ? { ...none, topLeft: radius, bottomLeft: radius }
+        : { ...none, topRight: radius, bottomRight: radius };
+    }
+    if (count === 3) {
+      if (index === 0) return { ...none, topLeft: radius, bottomLeft: radius };
+      if (index === 1) return { ...none, topRight: radius };
+      return { ...none, bottomRight: radius };
+    }
+    if (index === 0) return { ...none, topLeft: radius };
+    if (index === 1) return { ...none, topRight: radius };
+    if (index === 2) return { ...none, bottomLeft: radius };
+    if (index === 3) return { ...none, bottomRight: radius };
+    return none;
+  }
 
-    const nameBlock = article.querySelector('[data-testid="User-Name"]')
-      || article.querySelector('[data-testid="UserName"]');
+  function extractTweetFields(root, excludedRoots = []) {
+    const nameBlock = queryScopedNode(root, '[data-testid="User-Name"]', excludedRoots)
+      || queryScopedNode(root, '[data-testid="UserName"]', excludedRoots);
     const links = nameBlock && typeof nameBlock.querySelectorAll === 'function'
       ? Array.from(nameBlock.querySelectorAll('a[href]'))
       : [];
@@ -235,18 +328,15 @@
       || nameBlock?.querySelector?.('svg[aria-label="认证账号"]')
       || nameBlock?.querySelector?.('svg[aria-label="Verified account"]');
 
-    const textNode = article.querySelector('[data-testid="tweetText"]');
-    const avatar = article.querySelector('[data-testid="Tweet-User-Avatar"] img[src]');
-    const time = article.querySelector('time[datetime]');
-    const statusAnchor = time && typeof time.closest === 'function'
-      ? time.closest('a[href*="/status/"]')
-      : article.querySelector('a[href*="/status/"]');
-    const mediaNodes = typeof article.querySelectorAll === 'function'
-      ? Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] img[src]'))
-      : [];
-    const videoPosterUrl = extractVideoPosterUrl(article);
+    const textNode = queryScopedNode(root, '[data-testid="tweetText"]', excludedRoots);
+    const avatar = queryScopedNode(root, '[data-testid="Tweet-User-Avatar"] img[src]', excludedRoots);
+    const time = queryScopedNode(root, 'time[datetime]', excludedRoots);
+    const statusAnchor = time?.closest?.('a[href*="/status/"]')
+      || queryScopedNode(root, 'a[href*="/status/"]', excludedRoots);
+    const mediaNodes = queryScopedNodes(root, '[data-testid="tweetPhoto"] img[src]', excludedRoots);
+    const videoPosterUrl = extractVideoPosterUrl(root, excludedRoots);
 
-    return normalizeTweetData({
+    return {
       authorName,
       handle: handleText || (handleFromHref ? handleFromHref[1] : ''),
       isVerified: Boolean(verifiedIcon),
@@ -256,7 +346,104 @@
       publishedAt: time?.getAttribute?.('datetime') || '',
       statusUrl: statusAnchor?.getAttribute?.('href') || '',
       videoPosterUrl,
+    };
+  }
+
+  function extractTweetData(article, options = {}) {
+    if (!article || typeof article.querySelector !== 'function') return normalizeTweetData();
+
+    const quotedTweetRoot = findQuotedTweetRoot(article);
+    const tweet = extractTweetFields(article, quotedTweetRoot ? [quotedTweetRoot] : []);
+    const quotedTweet = quotedTweetRoot ? extractTweetFields(quotedTweetRoot) : null;
+    const hasQuotedContent = quotedTweet
+      && (quotedTweet.authorName || quotedTweet.handle || quotedTweet.text
+        || quotedTweet.mediaUrls.length || quotedTweet.videoPosterUrl);
+    const pageUrl = options.pageUrl
+      || (typeof global?.location?.href === 'string' ? global.location.href : '');
+    const replyContextArticle = hasQuotedContent
+      ? null
+      : findReplyContextArticle(article, pageUrl, tweet.statusUrl);
+    const replyQuotedRoot = replyContextArticle ? findQuotedTweetRoot(replyContextArticle) : null;
+    const replyToTweet = replyContextArticle
+      ? extractTweetFields(replyContextArticle, replyQuotedRoot ? [replyQuotedRoot] : [])
+      : null;
+    const hasReplyContext = replyToTweet
+      && (replyToTweet.authorName || replyToTweet.handle || replyToTweet.text
+        || replyToTweet.mediaUrls.length || replyToTweet.videoPosterUrl);
+
+    return normalizeTweetData({
+      ...tweet,
+      context: hasQuotedContent
+        ? { kind: 'quote', tweet: quotedTweet }
+        : hasReplyContext
+          ? { kind: 'reply', tweet: replyToTweet }
+          : null,
     });
+  }
+
+  function buildContextTweetLayout(context, area, measureText, options = {}) {
+    const tweet = context.tweet;
+    const padding = 34;
+    const contentX = area.x + padding;
+    const contentWidth = area.width - padding * 2;
+    const labelTop = area.y + padding;
+    const headerTop = labelTop + 44;
+    const headerHeight = 58;
+    const avatarRect = {
+      x: contentX,
+      y: headerTop,
+      width: 56,
+      height: 56,
+    };
+    const identityX = avatarRect.x + avatarRect.width + 16;
+    const identityWidth = contentX + contentWidth - identityX;
+    const textTop = headerTop + headerHeight + 26;
+    const contextMeasureText = typeof options.contextMeasureText === 'function'
+      ? options.contextMeasureText
+      : measureText;
+    const textLines = wrapText(tweet.text, contentWidth, contextMeasureText);
+    const textLineHeight = 44;
+    const textHeight = textLines.length * textLineHeight;
+    const mediaCount = Math.min(4, tweet.mediaUrls.length);
+    const singleMediaAspectRatio = Number(options.contextSingleMediaAspectRatio);
+    let mediaHeight = mediaCount ? 500 : 0;
+    if (mediaCount === 1 && singleMediaAspectRatio > 0) {
+      mediaHeight = contentWidth * singleMediaAspectRatio;
+    }
+    const mediaTop = textTop + textHeight + (textLines.length && mediaCount ? 28 : 0);
+    const mediaRects = getMediaLayout(mediaCount, {
+      x: contentX,
+      y: mediaTop,
+      width: contentWidth,
+      height: mediaHeight,
+      gap: 6,
+    });
+    const contentBottom = mediaCount
+      ? mediaTop + mediaHeight
+      : textLines.length
+        ? textTop + textHeight
+        : headerTop + headerHeight;
+    const rect = {
+      x: area.x,
+      y: area.y,
+      width: area.width,
+      height: contentBottom - area.y + padding,
+    };
+
+    return {
+      kind: context.kind,
+      tweet,
+      rect,
+      labelTop,
+      headerTop,
+      avatarRect,
+      identityX,
+      identityWidth,
+      textTop,
+      textLines,
+      textLineHeight,
+      mediaRects,
+    };
   }
 
   function buildCardLayout(tweet, measureText, options = {}) {
@@ -272,6 +459,19 @@
     const contentWidth = card.width - padding * 2;
     const headerTop = card.y + padding;
     const headerHeight = 104;
+    const avatarRect = {
+      x: contentX,
+      y: headerTop,
+      width: headerHeight,
+      height: headerHeight,
+    };
+    const brandLogoSize = getBrandLogoConfig().size;
+    const brandLogoRect = {
+      x: contentX + contentWidth - brandLogoSize,
+      y: headerTop + (headerHeight - brandLogoSize) / 2,
+      width: brandLogoSize,
+      height: brandLogoSize,
+    };
     const textTop = headerTop + headerHeight + 42;
     const textLineHeight = 58;
     const allTextLines = wrapText(tweet?.text || '', contentWidth, measureText);
@@ -291,9 +491,24 @@
       y: mediaTop,
       width: contentWidth,
       height: mediaHeight,
-      gap: 12,
+      gap: 6,
     });
-    const contentBottom = mediaCount ? mediaTop + mediaHeight : textTop + textHeight;
+    const primaryContentBottom = mediaCount ? mediaTop + mediaHeight : textTop + textHeight;
+    const contextLayout = tweet?.context?.tweet
+      ? buildContextTweetLayout(
+          tweet.context,
+          {
+            x: contentX,
+            y: primaryContentBottom + 42,
+            width: contentWidth,
+          },
+          measureText,
+          options,
+        )
+      : null;
+    const contentBottom = contextLayout
+      ? contextLayout.rect.y + contextLayout.rect.height
+      : primaryContentBottom;
     const footerTop = contentBottom + 56;
     const footerHeight = 38;
     const cardBottom = footerTop + footerHeight + padding;
@@ -303,8 +518,11 @@
       canvasWidth,
       canvasHeight: cardBottom + outerMargin,
       card,
+      avatarRect,
+      brandLogoRect,
       contentX,
       contentWidth,
+      contextLayout,
       footerTop,
       headerTop,
       mediaRects,
@@ -402,6 +620,7 @@
     findShareMenuAnchor,
     getMediaLayout,
     getMediaRenderConfig,
+    getMediaTileRadii,
     getShareMenuStyleText,
     getBrandLogoConfig,
     getVerifiedBadgeConfig,
@@ -437,13 +656,26 @@
   installPageStyle();
 
   function roundedRectPath(context, x, y, width, height, radius) {
-    const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+    const maxRadius = Math.max(0, Math.min(width / 2, height / 2));
+    const value = typeof radius === 'number'
+      ? { topLeft: radius, topRight: radius, bottomRight: radius, bottomLeft: radius }
+      : radius || {};
+    const radii = {
+      topLeft: Math.max(0, Math.min(Number(value.topLeft) || 0, maxRadius)),
+      topRight: Math.max(0, Math.min(Number(value.topRight) || 0, maxRadius)),
+      bottomRight: Math.max(0, Math.min(Number(value.bottomRight) || 0, maxRadius)),
+      bottomLeft: Math.max(0, Math.min(Number(value.bottomLeft) || 0, maxRadius)),
+    };
     context.beginPath();
-    context.moveTo(x + safeRadius, y);
-    context.arcTo(x + width, y, x + width, y + height, safeRadius);
-    context.arcTo(x + width, y + height, x, y + height, safeRadius);
-    context.arcTo(x, y + height, x, y, safeRadius);
-    context.arcTo(x, y, x + width, y, safeRadius);
+    context.moveTo(x + radii.topLeft, y);
+    context.lineTo(x + width - radii.topRight, y);
+    context.arcTo(x + width, y, x + width, y + radii.topRight, radii.topRight);
+    context.lineTo(x + width, y + height - radii.bottomRight);
+    context.arcTo(x + width, y + height, x + width - radii.bottomRight, y + height, radii.bottomRight);
+    context.lineTo(x + radii.bottomLeft, y + height);
+    context.arcTo(x, y + height, x, y + height - radii.bottomLeft, radii.bottomLeft);
+    context.lineTo(x, y + radii.topLeft);
+    context.arcTo(x, y, x + radii.topLeft, y, radii.topLeft);
     context.closePath();
   }
 
@@ -475,8 +707,8 @@
     context.restore();
   }
 
-  function drawVerifiedBadge(context, x, y) {
-    const config = getVerifiedBadgeConfig();
+  function drawVerifiedBadge(context, x, y, size = getVerifiedBadgeConfig().size) {
+    const config = { ...getVerifiedBadgeConfig(), size };
     if (drawSvgGlyph(context, config, x, y, '#1d9bf0')) return;
 
     context.save();
@@ -644,8 +876,14 @@
     context.restore();
   }
 
-  function drawMediaBorder(context, rect, config) {
+  function drawMediaBorder(context, rect, config, radius = 22) {
     const inset = config.borderWidth / 2;
+    const sourceRadii = typeof radius === 'number'
+      ? { topLeft: radius, topRight: radius, bottomRight: radius, bottomLeft: radius }
+      : radius;
+    const insetRadii = Object.fromEntries(
+      Object.entries(sourceRadii).map(([key, value]) => [key, Math.max(0, value - inset)]),
+    );
     context.save();
     roundedRectPath(
       context,
@@ -653,7 +891,7 @@
       rect.y + inset,
       rect.width - config.borderWidth,
       rect.height - config.borderWidth,
-      22 - inset,
+      insetRadii,
     );
     context.strokeStyle = config.borderColor;
     context.lineWidth = config.borderWidth;
@@ -682,16 +920,9 @@
     context.restore();
   }
 
-  function drawAvatar(context, asset, tweet, layout) {
-    const rect = {
-      x: layout.contentX,
-      y: layout.headerTop,
-      width: 104,
-      height: 104,
-    };
-
+  function drawAvatarInRect(context, asset, tweet, rect) {
     context.save();
-    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 52);
+    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, rect.width / 2);
     context.clip();
     if (asset?.image) {
       drawImageCover(context, asset.image, rect);
@@ -702,24 +933,32 @@
       context.fillStyle = gradient;
       context.fillRect(rect.x, rect.y, rect.width, rect.height);
       context.fillStyle = '#ffffff';
-      context.font = `700 46px ${FONT_STACK}`;
+      context.font = `700 ${Math.round(rect.width * 0.44)}px ${FONT_STACK}`;
       context.textAlign = 'center';
       context.textBaseline = 'middle';
-      context.fillText(Array.from(tweet.authorName || tweet.handle || 'X')[0] || 'X', rect.x + 52, rect.y + 54);
+      context.fillText(
+        Array.from(tweet.authorName || tweet.handle || 'X')[0] || 'X',
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2 + 2,
+      );
     }
     context.restore();
 
     context.save();
     context.strokeStyle = 'rgba(15, 20, 25, 0.08)';
     context.lineWidth = 2;
-    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 52);
+    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, rect.width / 2);
     context.stroke();
     context.restore();
   }
 
-  function drawMediaPlaceholder(context, rect) {
+  function drawAvatar(context, asset, tweet, layout) {
+    drawAvatarInRect(context, asset, tweet, layout.avatarRect);
+  }
+
+  function drawMediaPlaceholder(context, rect, radius = 22) {
     context.save();
-    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 22);
+    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, radius);
     context.fillStyle = '#eff3f4';
     context.fill();
     context.fillStyle = '#8b98a5';
@@ -730,25 +969,149 @@
     context.restore();
   }
 
-  async function renderShareCard(rawTweet) {
-    const tweet = normalizeTweetData(rawTweet);
-    const measureCanvas = document.createElement('canvas');
-    const measureContext = measureCanvas.getContext('2d');
-    measureContext.font = `400 42px ${FONT_STACK}`;
+  async function loadTweetAssetBundle(tweet) {
+    if (!tweet) return { avatarAsset: null, mediaAssets: [], loaded: [] };
     const assetUrls = [tweet.avatarUrl, ...tweet.mediaUrls].filter(Boolean);
     const loaded = await Promise.all(assetUrls.map((url) => loadImageAsset(url).catch(() => null)));
     let loadedIndex = 0;
     const avatarAsset = tweet.avatarUrl ? loaded[loadedIndex++] : null;
     const mediaAssets = tweet.mediaUrls.map(() => loaded[loadedIndex++] || null);
-    const singleMediaImage = mediaAssets.length === 1 ? mediaAssets[0]?.image : null;
-    const singleMediaAspectRatio = singleMediaImage
-      ? (singleMediaImage.naturalHeight || singleMediaImage.height)
-        / (singleMediaImage.naturalWidth || singleMediaImage.width)
+    return { avatarAsset, mediaAssets, loaded };
+  }
+
+  function getSingleMediaAspectRatio(mediaAssets) {
+    const image = mediaAssets.length === 1 ? mediaAssets[0]?.image : null;
+    return image
+      ? (image.naturalHeight || image.height) / (image.naturalWidth || image.width)
       : undefined;
+  }
+
+  function drawTweetMedia(context, tweet, mediaAssets, mediaRects) {
+    const mediaRenderConfig = getMediaRenderConfig(mediaRects.length);
+    mediaRects.forEach((rect, index) => {
+      const asset = mediaAssets[index];
+      const radius = getMediaTileRadii(mediaRects.length, index);
+      if (asset?.image && mediaRenderConfig.fit === 'contain') {
+        drawImageContain(context, asset.image, rect, radius);
+      } else if (asset?.image) {
+        drawImageCover(context, asset.image, rect, radius);
+      } else {
+        drawMediaPlaceholder(context, rect, radius);
+      }
+      drawMediaBorder(context, rect, mediaRenderConfig, radius);
+      if (tweet.videoPosterUrl && tweet.mediaUrls[index] === tweet.videoPosterUrl) {
+        drawVideoPlayOverlay(context, rect);
+      }
+    });
+  }
+
+  function formatContextPublishedAt(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    try {
+      return new Intl.DateTimeFormat('zh-CN', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+      }).format(date);
+    } catch (_error) {
+      return date.toLocaleDateString();
+    }
+  }
+
+  function drawContextTweet(context, contextLayout, assets) {
+    const { rect, tweet } = contextLayout;
+    context.save();
+    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 28);
+    context.fillStyle = '#ffffff';
+    context.fill();
+    context.strokeStyle = '#cfd9df';
+    context.lineWidth = 3;
+    context.stroke();
+    context.restore();
+
+    context.textAlign = 'left';
+    context.textBaseline = 'alphabetic';
+    context.fillStyle = '#536471';
+    context.font = `650 24px ${FONT_STACK}`;
+    context.fillText(
+      contextLayout.kind === 'reply' ? '回复的推文' : '引用推文',
+      rect.x + 34,
+      contextLayout.labelTop + 22,
+    );
+
+    drawAvatarInRect(context, assets.avatarAsset, tweet, contextLayout.avatarRect);
+
+    context.fillStyle = '#0f1419';
+    context.font = `700 28px ${FONT_STACK}`;
+    const badgeSize = 24;
+    const badgeReserve = tweet.isVerified ? badgeSize + 8 : 0;
+    const displayName = fitCanvasText(
+      context,
+      tweet.authorName || tweet.handle || 'X 用户',
+      contextLayout.identityWidth - badgeReserve,
+    );
+    context.fillText(displayName, contextLayout.identityX, contextLayout.headerTop + 25);
+    if (tweet.isVerified) {
+      drawVerifiedBadge(
+        context,
+        contextLayout.identityX + context.measureText(displayName).width + 8,
+        contextLayout.headerTop + 3,
+        badgeSize,
+      );
+    }
+
+    const contextDate = formatContextPublishedAt(tweet.publishedAt);
+    const meta = [tweet.handle, contextDate].filter(Boolean).join(' · ');
+    context.fillStyle = '#536471';
+    context.font = `400 23px ${FONT_STACK}`;
+    context.fillText(
+      fitCanvasText(context, meta, contextLayout.identityWidth),
+      contextLayout.identityX,
+      contextLayout.headerTop + 54,
+    );
+
+    context.fillStyle = '#0f1419';
+    context.font = `400 32px ${FONT_STACK}`;
+    for (let index = 0; index < contextLayout.textLines.length; index += 1) {
+      const line = contextLayout.textLines[index];
+      if (line) {
+        context.fillText(
+          line,
+          rect.x + 34,
+          contextLayout.textTop + (index + 1) * contextLayout.textLineHeight - 8,
+        );
+      }
+    }
+
+    drawTweetMedia(context, tweet, assets.mediaAssets, contextLayout.mediaRects);
+  }
+
+  async function renderShareCard(rawTweet) {
+    const tweet = normalizeTweetData(rawTweet);
+    const measureCanvas = document.createElement('canvas');
+    const measureContext = measureCanvas.getContext('2d');
+    const [primaryAssets, contextAssets] = await Promise.all([
+      loadTweetAssetBundle(tweet),
+      loadTweetAssetBundle(tweet.context?.tweet),
+    ]);
+    const singleMediaAspectRatio = getSingleMediaAspectRatio(primaryAssets.mediaAssets);
+    const contextSingleMediaAspectRatio = getSingleMediaAspectRatio(contextAssets.mediaAssets);
     const layout = buildCardLayout(
       tweet,
-      (text) => measureContext.measureText(text).width,
-      { singleMediaAspectRatio },
+      (text) => {
+        measureContext.font = `400 42px ${FONT_STACK}`;
+        return measureContext.measureText(text).width;
+      },
+      {
+        singleMediaAspectRatio,
+        contextSingleMediaAspectRatio,
+        contextMeasureText: (text) => {
+          measureContext.font = `400 32px ${FONT_STACK}`;
+          return measureContext.measureText(text).width;
+        },
+      },
     );
     const canvas = document.createElement('canvas');
     canvas.width = layout.canvasWidth;
@@ -761,14 +1124,21 @@
       context.fillStyle = '#f4f7fb';
       context.fillRect(0, 0, layout.canvasWidth, layout.canvasHeight);
 
+      context.save();
+      context.shadowColor = 'rgba(25, 39, 52, 0.18)';
+      context.shadowBlur = 44;
+      context.shadowOffsetY = 18;
       roundedRectPath(context, layout.card.x, layout.card.y, layout.card.width, layout.card.height, 44);
       context.fillStyle = '#ffffff';
       context.fill();
+      context.restore();
+
+      roundedRectPath(context, layout.card.x, layout.card.y, layout.card.width, layout.card.height, 44);
       context.strokeStyle = 'rgba(15,20,25,0.08)';
       context.lineWidth = 2;
       context.stroke();
 
-      drawAvatar(context, avatarAsset, tweet, layout);
+      drawAvatar(context, primaryAssets.avatarAsset, tweet, layout);
 
       const identityX = layout.contentX + 132;
       const identityWidth = layout.contentWidth - 132 - 100;
@@ -792,11 +1162,10 @@
       context.font = `400 30px ${FONT_STACK}`;
       context.fillText(fitCanvasText(context, tweet.handle, identityWidth), identityX, layout.headerTop + 87);
 
-      const brandLogo = getBrandLogoConfig();
       drawBrandLogo(
         context,
-        layout.contentX + layout.contentWidth - brandLogo.size,
-        layout.headerTop + 8,
+        layout.brandLogoRect.x,
+        layout.brandLogoRect.y,
       );
 
       context.textAlign = 'left';
@@ -808,21 +1177,11 @@
         if (line) context.fillText(line, layout.contentX, layout.textTop + (index + 1) * layout.textLineHeight - 10);
       }
 
-      const mediaRenderConfig = getMediaRenderConfig(layout.mediaRects.length);
-      layout.mediaRects.forEach((rect, index) => {
-        const asset = mediaAssets[index];
-        if (asset?.image && mediaRenderConfig.fit === 'contain') {
-          drawImageContain(context, asset.image, rect, 22);
-        } else if (asset?.image) {
-          drawImageCover(context, asset.image, rect, 22);
-        } else {
-          drawMediaPlaceholder(context, rect);
-        }
-        drawMediaBorder(context, rect, mediaRenderConfig);
-        if (tweet.videoPosterUrl && tweet.mediaUrls[index] === tweet.videoPosterUrl) {
-          drawVideoPlayOverlay(context, rect);
-        }
-      });
+      drawTweetMedia(context, tweet, primaryAssets.mediaAssets, layout.mediaRects);
+
+      if (layout.contextLayout) {
+        drawContextTweet(context, layout.contextLayout, contextAssets);
+      }
 
       context.strokeStyle = '#eff3f4';
       context.lineWidth = 2;
@@ -839,7 +1198,7 @@
       context.font = `600 25px ${FONT_STACK}`;
       context.fillText('X · SHARE CARD', layout.contentX + layout.contentWidth, layout.footerTop + 25);
     } finally {
-      for (const asset of loaded) asset?.revoke?.();
+      for (const asset of [...primaryAssets.loaded, ...contextAssets.loaded]) asset?.revoke?.();
     }
 
     return canvas;

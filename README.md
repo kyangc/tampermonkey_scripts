@@ -4,6 +4,44 @@
 
 ## 脚本列表
 
+### Make X Great Again（跨平台 userscript）
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js)
+
+这是对 [foru17/make-x-great-again](https://github.com/foru17/make-x-great-again) 的 AGPL-3.0-or-later userscript 迁移与跨端适配，目标是在一份脚本中同时支持 PC 浏览器和 iOS Safari。许可证全文见 [`LICENSES/AGPL-3.0.txt`](LICENSES/AGPL-3.0.txt)。
+
+当前功能：
+
+- 定期同步 MXGA 公共名单与官方白名单，匹配全程在本机完成。
+- 在 X 首页、搜索、状态页、评论区和个人主页显示名单徽标。
+- PC 支持悬停、键盘聚焦和点击；iPhone / iPad 使用点击与底部弹层。
+- 可手动本地隐藏账号帖子，5 秒内撤销，也可从脚本面板恢复。
+- 自动收录与人工确认条目都会明确标注；当前版本一律只提示，不自动隐藏。
+- 使用原名单数组排序和二分查找，避免为大名单额外建立两张内存索引。
+
+安全边界：
+
+- 不上传页面内容、X 身份、命中结果或本地隐藏记录。
+- 不调用 X 私有接口，不执行 X 原生静音或拉黑。
+- 只作用于 PC / iOS 浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
+- 请勿与原版 MXGA 浏览器扩展同时启用，以免出现重复徽标和两套隐藏记录。
+
+PC 安装：
+
+1. 安装 Tampermonkey。
+2. 打开上面的 raw 安装链接并确认安装。
+3. 访问 `https://x.com/`，右下角出现 `MXGA` 控制按钮。
+
+iOS / iPadOS 安装：
+
+1. 安装并打开 [Userscripts](https://apps.apple.com/app/userscripts/id1463298887)。
+2. 在“设置 → Safari → 扩展 → Userscripts”中启用扩展，并允许访问 `x.com`。
+3. 在 Userscripts App 中设置脚本目录，然后在 Safari 的 Userscripts 界面选择 `New Remote`。
+4. 粘贴上面的 raw 安装链接，保存并启用脚本。
+5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
+
+兼容性状态：PC 端浏览器夹具与线上名单解析已验证；iOS Userscripts 的真实设备内存、安装更新和触控流程仍是正式兼容性验收门槛。
+
 ### M-Team 种子列表增强
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/m-team-torrent-enhancer.user.js)
@@ -64,6 +102,7 @@
 - `scripts/`：Tampermonkey `.user.js` 脚本。
 - `test/`：脚本中纯逻辑部分的 Node 测试。
 - `tools/`：本仓库的工程校验脚本。
+- `LICENSES/`：衍生脚本所需的开源许可证全文。
 - `docs/userscript-conventions.md`：油猴脚本发布和更新约定。
 - `AGENTS.md`：给新 AI thread / coding agent 的项目操作说明。
 

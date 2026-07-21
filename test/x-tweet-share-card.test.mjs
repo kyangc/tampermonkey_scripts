@@ -246,6 +246,14 @@ test('does not render clipped outer shadows around the share poster or modal', (
   assert.doesNotMatch(scriptText, /\.preview\{[^}]*box-shadow:/s);
 });
 
+test('uses flat solid backgrounds outside the share card', () => {
+  assert.doesNotMatch(scriptText, /createLinearGradient\(0,\s*0,\s*layout\.canvasWidth/);
+  assert.doesNotMatch(scriptText, /\.preview-shell\{[^}]*background:linear-gradient/s);
+  assert.doesNotMatch(scriptText, /globalAlpha\s*=\s*0\.55/);
+  assert.match(scriptText, /context\.fillStyle\s*=\s*'#f4f7fb';/);
+  assert.match(scriptText, /\.preview-shell\{[^}]*background:#f4f7fb/s);
+});
+
 test('recognizes only the native X tweet share menu as an injection target', () => {
   const shareMenu = {
     querySelector: (selector) => selector.includes('copyLinkToTweet') ? {} : null,

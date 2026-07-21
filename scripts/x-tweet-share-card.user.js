@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.2
+// @version      0.1.3
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -758,20 +758,8 @@
     context.imageSmoothingQuality = 'high';
 
     try {
-      const background = context.createLinearGradient(0, 0, layout.canvasWidth, layout.canvasHeight);
-      background.addColorStop(0, '#dff2ff');
-      background.addColorStop(0.5, '#f4f7fb');
-      background.addColorStop(1, '#eee9ff');
-      context.fillStyle = background;
+      context.fillStyle = '#f4f7fb';
       context.fillRect(0, 0, layout.canvasWidth, layout.canvasHeight);
-
-      context.save();
-      context.globalAlpha = 0.55;
-      context.fillStyle = '#ffffff';
-      context.beginPath();
-      context.arc(1080, 76, 250, 0, Math.PI * 2);
-      context.fill();
-      context.restore();
 
       roundedRectPath(context, layout.card.x, layout.card.y, layout.card.width, layout.card.height, 44);
       context.fillStyle = '#ffffff';
@@ -918,7 +906,7 @@
         .close{flex:0 0 auto;display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:999px;background:#eff3f4;color:#0f1419;cursor:pointer;transition:.16s ease}
         .close:hover{background:#dfe5e8;transform:rotate(4deg)}
         .close:focus-visible,.button:focus-visible{outline:3px solid rgba(29,155,240,.32);outline-offset:2px}
-        .preview-shell{min-height:280px;overflow:auto;padding:24px;background:linear-gradient(135deg,#eef8ff 0%,#f7f9f9 48%,#f4efff 100%);overscroll-behavior:contain}
+        .preview-shell{min-height:280px;overflow:auto;padding:24px;background:#f4f7fb;overscroll-behavior:contain}
         .preview{display:block;width:100%;height:auto;border-radius:18px}
         .preview[hidden]{display:none}
         .loading{display:grid;place-items:center;align-content:center;gap:16px;min-height:330px;color:#536471;text-align:center}

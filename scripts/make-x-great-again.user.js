@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.1
+// @version      0.1.2
 // @description  Mark public-list spam accounts on X and hide them locally on PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -69,6 +69,20 @@
     hidden: 'mxga:hidden:v1',
     syncLock: 'mxga:sync-lock:v1',
   };
+
+  function errorMessage(error, fallback = '未知错误') {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error.trim();
+    if (error && typeof error === 'object') {
+      for (const key of ['message', 'error', 'statusText']) {
+        const value = error[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      const status = Number(error.status);
+      if (Number.isFinite(status) && status > 0) return `HTTP ${status}`;
+    }
+    return fallback;
+  }
 
   function validIdentity(userId, handle) {
     return (
@@ -252,7 +266,7 @@
           updated: false,
           white,
           whitelistEntries: refreshedWhitelist?.entries,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error, '名单更新失败'),
         };
       }
     }
@@ -451,7 +465,9 @@
     createAccountIndex,
     createHiddenRegistry,
     createListSynchronizer,
+    createRequestAdapter,
     decodeEntry,
+    errorMessage,
     extractHandleFromHref,
     findProfileNameBlock,
     getAccountPresentation,
@@ -516,18 +532,23 @@
       throw new Error('当前 userscript 管理器没有提供 GM.xmlHttpRequest');
     }
     return async function requestText(url, maxBytes) {
-      const response = await gm.xmlHttpRequest({
-        method: 'GET',
-        url,
-        headers: {
-          Accept: 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-        responseType: 'text',
-        timeout: 60000,
-      });
+      let response;
+      try {
+        response = await gm.xmlHttpRequest({
+          method: 'GET',
+          url,
+          headers: {
+            Accept: 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          responseType: 'text',
+          timeout: 60000,
+        });
+      } catch (error) {
+        throw new Error(errorMessage(error, '网络请求失败'));
+      }
       if (!response || response.status < 200 || response.status >= 300) {
-        throw new Error('request failed: ' + (response?.status || 'network'));
+        throw new Error(response?.status ? `HTTP ${response.status}` : '网络请求失败');
       }
       const text =
         typeof response.responseText === 'string'
@@ -626,7 +647,7 @@
         entries: [],
         meta: storedMeta,
         whitelistEntries,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error, '缓存读取失败'),
       };
     }
   }
@@ -1257,7 +1278,7 @@
       try {
         await storage.set(STORAGE_KEYS.hidden, state.hidden.list());
       } catch (error) {
-        state.error = '隐藏记录保存失败：' + (error instanceof Error ? error.message : String(error));
+        state.error = '隐藏记录保存失败：' + errorMessage(error);
         render();
       }
     }
@@ -1285,7 +1306,7 @@
       try {
         await storage.set(STORAGE_KEYS.settings, state.settings);
       } catch (error) {
-        state.error = '设置保存失败：' + (error instanceof Error ? error.message : String(error));
+        state.error = '设置保存失败：' + errorMessage(error);
         render();
       }
     }
@@ -1381,7 +1402,7 @@
         rebuildIndex();
         state.error = result.error || null;
       } catch (error) {
-        state.error = error instanceof Error ? error.message : String(error);
+        state.error = errorMessage(error, '名单更新失败');
       } finally {
         if (locked) {
           try {

@@ -139,6 +139,17 @@ test('a corrupt list update never replaces the last known-good cache', async () 
   assert.equal(values.get('mxga:list-meta:v1'), oldMeta);
 });
 
+test('GM request object rejections become a readable network error', async () => {
+  const requestText = core.createRequestAdapter({
+    xmlHttpRequest: async () => Promise.reject({ status: 0, statusText: '' }),
+  });
+
+  await assert.rejects(
+    requestText('https://x.zuoluo.tv/v1/list/meta', 1024),
+    /网络请求失败/,
+  );
+});
+
 test('a valid changed artifact is stored with a safe fallback version', async () => {
   const values = new Map();
   const entries = Array.from({ length: 1000 }, (_, index) => [

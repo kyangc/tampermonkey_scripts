@@ -150,6 +150,32 @@ test('GM request object rejections become a readable network error', async () =>
   );
 });
 
+test('GM request adapter performs a bodyless read-only request', async () => {
+  const requests = [];
+  const requestText = core.createRequestAdapter({
+    xmlHttpRequest: async (request) => {
+      requests.push(request);
+      return { status: 200, responseText: '{"ok":true}' };
+    },
+  });
+
+  assert.equal(
+    await requestText('https://x.zuoluo.tv/v1/list/meta', 1024),
+    '{"ok":true}',
+  );
+  assert.deepEqual(requests, [{
+    method: 'GET',
+    url: 'https://x.zuoluo.tv/v1/list/meta',
+    headers: {
+      Accept: 'application/json',
+      'Cache-Control': 'no-cache',
+    },
+    responseType: 'text',
+    timeout: 60000,
+  }]);
+  assert.equal('data' in requests[0], false);
+});
+
 test('a valid changed artifact is stored with a safe fallback version', async () => {
   const values = new Map();
   const entries = Array.from({ length: 1000 }, (_, index) => [
@@ -258,6 +284,7 @@ test('binary lookup remains correct for underscore-prefixed and mixed-case handl
 test('metadata exposes the cross-platform interface required by Tampermonkey and iOS Userscripts', () => {
   assert.deepEqual(metadataValues('inject-into'), ['content']);
   assert.deepEqual(metadataValues('match'), ['https://x.com/*', 'https://twitter.com/*']);
+  assert.deepEqual(metadataValues('connect'), ['x.zuoluo.tv']);
   assert.deepEqual(new Set(metadataValues('grant')), new Set([
     'GM.getValue',
     'GM.setValue',
@@ -269,4 +296,9 @@ test('metadata exposes the cross-platform interface required by Tampermonkey and
     'https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js',
   ]);
   assert.deepEqual(metadataValues('downloadURL'), metadataValues('updateURL'));
+});
+
+test('userscript contains no X private API or page-world network client', () => {
+  assert.doesNotMatch(scriptText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
+  assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users|\/i\/api\/|graphql)/i);
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.0
+// @version      0.2.1
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -608,9 +608,20 @@
   function getVerifiedBadgeConfig() {
     return {
       path: 'M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.854-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.688-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.634.433 1.218.877 1.688.47.443 1.054.747 1.687.878.633.132 1.29.084 1.897-.136.274.586.705 1.084 1.246 1.439.54.354 1.17.551 1.816.569.647-.016 1.276-.213 1.817-.567s.972-.854 1.245-1.44c.604.239 1.266.296 1.903.164.636-.132 1.22-.447 1.68-.907.46-.46.776-1.044.908-1.681s.075-1.299-.165-1.903c.586-.274 1.084-.705 1.439-1.246.354-.54.551-1.17.569-1.816zM9.662 14.85l-3.429-3.428 1.293-1.302 2.072 2.072 4.4-4.794 1.347 1.246z',
-      size: 32,
+      size: 36,
       viewBoxSize: 22,
     };
+  }
+
+  function getInlineBadgeTop(baselineY, badgeSize, metrics = {}, fontSize = badgeSize) {
+    const ascent = Number.isFinite(metrics.actualBoundingBoxAscent)
+      ? metrics.actualBoundingBoxAscent
+      : fontSize * 0.78;
+    const descent = Number.isFinite(metrics.actualBoundingBoxDescent)
+      ? metrics.actualBoundingBoxDescent
+      : fontSize * 0.22;
+    const textCenterY = baselineY + (descent - ascent) / 2;
+    return textCenterY - badgeSize / 2;
   }
 
   const core = {
@@ -624,6 +635,7 @@
     getShareMenuStyleText,
     getBrandLogoConfig,
     getVerifiedBadgeConfig,
+    getInlineBadgeTop,
     getVideoPlayOverlayLayout,
     isTweetShareButton,
     isTweetShareMenu,
@@ -1045,19 +1057,21 @@
 
     context.fillStyle = '#0f1419';
     context.font = `700 28px ${FONT_STACK}`;
-    const badgeSize = 24;
+    const badgeSize = 26;
     const badgeReserve = tweet.isVerified ? badgeSize + 8 : 0;
     const displayName = fitCanvasText(
       context,
       tweet.authorName || tweet.handle || 'X 用户',
       contextLayout.identityWidth - badgeReserve,
     );
-    context.fillText(displayName, contextLayout.identityX, contextLayout.headerTop + 25);
+    const nameBaselineY = contextLayout.headerTop + 25;
+    const nameMetrics = context.measureText(displayName);
+    context.fillText(displayName, contextLayout.identityX, nameBaselineY);
     if (tweet.isVerified) {
       drawVerifiedBadge(
         context,
-        contextLayout.identityX + context.measureText(displayName).width + 8,
-        contextLayout.headerTop + 3,
+        contextLayout.identityX + nameMetrics.width + 8,
+        getInlineBadgeTop(nameBaselineY, badgeSize, nameMetrics, 28),
         badgeSize,
       );
     }
@@ -1153,10 +1167,18 @@
         tweet.authorName || tweet.handle || 'X 用户',
         identityWidth - badgeReserve,
       );
-      context.fillText(displayName, identityX, layout.headerTop + 43);
+      const nameBaselineY = layout.headerTop + 43;
+      const nameMetrics = context.measureText(displayName);
+      context.fillText(displayName, identityX, nameBaselineY);
       if (tweet.isVerified) {
-        const badgeX = identityX + context.measureText(displayName).width + 10;
-        drawVerifiedBadge(context, badgeX, layout.headerTop + 11);
+        const badgeX = identityX + nameMetrics.width + 10;
+        const badgeY = getInlineBadgeTop(
+          nameBaselineY,
+          verifiedConfig.size,
+          nameMetrics,
+          38,
+        );
+        drawVerifiedBadge(context, badgeX, badgeY);
       }
       context.fillStyle = '#536471';
       context.font = `400 30px ${FONT_STACK}`;

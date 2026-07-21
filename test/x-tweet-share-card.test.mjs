@@ -447,9 +447,23 @@ test('uses the current official X and verified glyphs at card-friendly sizes', (
   assert.equal(xLogo.size, 58);
   assert.equal(xLogo.viewBoxSize, 24);
   assert.match(xLogo.path, /^M21\.742 21\.75/);
-  assert.equal(verified.size, 32);
+  assert.equal(verified.size, 36);
   assert.equal(verified.viewBoxSize, 22);
   assert.match(verified.path, /^M20\.396 11/);
+});
+
+test('vertically centers verified badges against the visible name glyphs', () => {
+  const baselineY = 100;
+  const badgeSize = 36;
+  const badgeTop = core.getInlineBadgeTop(
+    baselineY,
+    badgeSize,
+    { actualBoundingBoxAscent: 30, actualBoundingBoxDescent: 6 },
+    38,
+  );
+
+  assert.equal(badgeTop + badgeSize / 2, baselineY + (6 - 30) / 2);
+  assert.equal(core.getInlineBadgeTop(baselineY, badgeSize, {}, 38), 71.36);
 });
 
 test('vertically centers the X logo against the main avatar', () => {

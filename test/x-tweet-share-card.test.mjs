@@ -514,10 +514,10 @@ test('adds a two-line source guide and right-aligned QR area for the copied twee
   assert.equal(layout.sourceGuide.label, '扫码查看详情');
   assert.equal(layout.sourceGuide.url, statusUrl);
   assert.equal(layout.sourceGuide.rect.y > layout.card.y + layout.card.height, true);
-  assert.equal(layout.sourceGuide.textX, layout.contentX);
+  assert.equal(layout.sourceGuide.textX, layout.card.x);
   assert.equal(
     layout.sourceGuide.qrRect.x + layout.sourceGuide.qrRect.width,
-    layout.contentX + layout.contentWidth,
+    layout.card.x + layout.card.width,
   );
   assert.equal(
     layout.sourceGuide.qrRect.y + layout.sourceGuide.qrRect.height / 2,

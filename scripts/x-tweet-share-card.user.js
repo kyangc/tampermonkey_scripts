@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.1
+// @version      0.3.2
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -666,9 +666,9 @@
     const sourceGuide = sourceUrl
       ? (() => {
           const rect = {
-            x: contentX,
+            x: card.x,
             y: cardBottom + 42,
-            width: contentWidth,
+            width: card.width,
             height: 136,
           };
           const qrSize = 136;

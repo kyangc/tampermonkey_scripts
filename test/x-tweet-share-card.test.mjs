@@ -504,6 +504,77 @@ test('grows the share card around wrapped text before placing tweet media', () =
   assert.ok(long.mediaRects.every((rect) => rect.x + rect.width <= long.card.x + long.card.width));
 });
 
+test('adds a two-line source guide and right-aligned QR area for the copied tweet URL', () => {
+  const statusUrl = 'https://x.com/ada_dev/status/1234567890';
+  const layout = core.buildCardLayout(
+    { text: 'Open the original post', statusUrl },
+    (value) => Array.from(value).length * 20,
+  );
+
+  assert.equal(layout.sourceGuide.label, '扫码查看详情');
+  assert.equal(layout.sourceGuide.url, statusUrl);
+  assert.equal(layout.sourceGuide.rect.y > layout.footerTop, true);
+  assert.equal(
+    layout.sourceGuide.qrRect.x + layout.sourceGuide.qrRect.width,
+    layout.sourceGuide.rect.x + layout.sourceGuide.rect.width - 20,
+  );
+  assert.equal(
+    layout.sourceGuide.qrRect.y + layout.sourceGuide.qrRect.height / 2,
+    layout.sourceGuide.rect.y + layout.sourceGuide.rect.height / 2,
+  );
+  assert.equal(layout.canvasHeight > layout.sourceGuide.rect.y + layout.sourceGuide.rect.height, true);
+});
+
+test('encodes the copied tweet URL into a local QR matrix with medium error correction', () => {
+  const calls = [];
+  const qrFactory = (typeNumber, errorCorrectionLevel) => {
+    calls.push({ typeNumber, errorCorrectionLevel });
+    return {
+      addData(value, mode) {
+        calls.push({ value, mode });
+      },
+      make() {
+        calls.push('make');
+      },
+      getModuleCount: () => 2,
+      isDark: (row, column) => row === column,
+    };
+  };
+  const statusUrl = 'https://x.com/ada_dev/status/1234567890';
+
+  const matrix = core.createQrMatrix(statusUrl, qrFactory);
+
+  assert.deepEqual(calls, [
+    { typeNumber: 0, errorCorrectionLevel: 'M' },
+    { value: statusUrl, mode: 'Byte' },
+    'make',
+  ]);
+  assert.deepEqual(matrix, [
+    [true, false],
+    [false, true],
+  ]);
+});
+
+test('pixel-aligns QR modules with at least a four-module quiet zone', () => {
+  const rect = { x: 800, y: 120, width: 136, height: 136 };
+  const render = core.getQrRenderConfig(33, rect);
+
+  assert.equal(render.moduleSize, 3);
+  assert.equal(render.originX, 819);
+  assert.equal(render.originY, 139);
+  assert.equal(render.quietZoneSize, 12);
+  assert.equal(render.originX - rect.x >= render.quietZoneSize, true);
+  assert.equal(rect.x + rect.width - (render.originX + render.codeSize) >= render.quietZoneSize, true);
+});
+
+test('loads a pinned integrity-checked QR encoder without using an online QR service', () => {
+  assert.match(
+    scriptText,
+    /@require\s+https:\/\/raw\.githubusercontent\.com\/kazuhikoarase\/qrcode-generator\/js2\.0\.4\/js\/dist\/qrcode\.js#sha256-eeyG\+ChWAFsciHkFz8z8\+\+w4Icphx\/1alS\+qX3ePeRw=/,
+  );
+  assert.doesNotMatch(scriptText, /api\.qrserver|quickchart|chart\.googleapis/i);
+});
+
 test('lays out a complete nested tweet with its own X-style media grid', () => {
   const measureText = (value) => Array.from(value).length * 20;
   const nestedText = `${'Quoted context stays complete. '.repeat(70)}THE_END`;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.3
+// @version      0.3.0
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -10,6 +10,7 @@
 // @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js
 // @match        https://x.com/*
 // @match        https://twitter.com/*
+// @require      https://raw.githubusercontent.com/kazuhikoarase/qrcode-generator/js2.0.4/js/dist/qrcode.js#sha256-eeyG+ChWAFsciHkFz8z8++w4Icphx/1alS+qX3ePeRw=
 // @run-at       document-idle
 // @inject-into  content
 // @grant        GM.xmlHttpRequest
@@ -660,7 +661,35 @@
       : primaryContentBottom;
     const footerTop = contentBottom + 56;
     const footerHeight = 38;
-    const cardBottom = footerTop + footerHeight + padding;
+    const sourceUrl = normalizeStatusUrl(tweet?.statusUrl);
+    const sourceGuide = sourceUrl
+      ? (() => {
+          const rect = {
+            x: contentX,
+            y: footerTop + footerHeight + 38,
+            width: contentWidth,
+            height: 176,
+          };
+          const qrSize = 136;
+          return {
+            label: '扫码查看详情',
+            url: sourceUrl,
+            rect,
+            textX: rect.x + 30,
+            labelBaselineY: rect.y + 68,
+            urlBaselineY: rect.y + 118,
+            qrRect: {
+              x: rect.x + rect.width - qrSize - 20,
+              y: rect.y + (rect.height - qrSize) / 2,
+              width: qrSize,
+              height: qrSize,
+            },
+          };
+        })()
+      : null;
+    const cardBottom = sourceGuide
+      ? sourceGuide.rect.y + sourceGuide.rect.height + padding
+      : footerTop + footerHeight + padding;
     card.height = cardBottom - card.y;
 
     return {
@@ -675,6 +704,7 @@
       footerTop,
       headerTop,
       mediaRects,
+      sourceGuide,
       textLineHeight,
       textLineRuns,
       textLines,
@@ -774,8 +804,50 @@
     return textCenterY - badgeSize / 2;
   }
 
+  function createQrMatrix(value, qrFactory) {
+    const sourceUrl = normalizeStatusUrl(value);
+    if (!sourceUrl) return [];
+    const factory = typeof qrFactory === 'function'
+      ? qrFactory
+      : typeof qrcode === 'function'
+        ? qrcode
+        : global?.qrcode;
+    if (typeof factory !== 'function') {
+      throw new Error('二维码生成组件未加载');
+    }
+
+    const qr = factory(0, 'M');
+    qr.addData(sourceUrl, 'Byte');
+    qr.make();
+    const moduleCount = qr.getModuleCount();
+    if (!Number.isInteger(moduleCount) || moduleCount <= 0) {
+      throw new Error('二维码矩阵无效');
+    }
+    return Array.from({ length: moduleCount }, (_, row) => (
+      Array.from({ length: moduleCount }, (_, column) => Boolean(qr.isDark(row, column)))
+    ));
+  }
+
+  function getQrRenderConfig(moduleCount, rect) {
+    const count = Math.floor(Number(moduleCount) || 0);
+    if (count <= 0) throw new Error('二维码矩阵无效');
+    const quietZoneModules = 4;
+    const moduleSize = Math.max(1, Math.floor(
+      Math.min(rect.width, rect.height) / (count + quietZoneModules * 2),
+    ));
+    const codeSize = count * moduleSize;
+    return {
+      moduleSize,
+      codeSize,
+      quietZoneSize: quietZoneModules * moduleSize,
+      originX: Math.round(rect.x + (rect.width - codeSize) / 2),
+      originY: Math.round(rect.y + (rect.height - codeSize) / 2),
+    };
+  }
+
   const core = {
     buildCardLayout,
+    createQrMatrix,
     drawTweetTextRuns,
     extractTweetData,
     extractVideoPosterUrl,
@@ -783,6 +855,7 @@
     getMediaLayout,
     getMediaRenderConfig,
     getMediaTileRadii,
+    getQrRenderConfig,
     getShareMenuStyleText,
     getTweetTextSegments,
     getBrandLogoConfig,
@@ -1255,6 +1328,64 @@
     drawTweetMedia(context, tweet, assets.mediaAssets, contextLayout.mediaRects);
   }
 
+  function drawQrModules(context, matrix, rect) {
+    const moduleCount = matrix.length;
+    if (!moduleCount) return;
+    const render = getQrRenderConfig(moduleCount, rect);
+    context.fillStyle = '#0f1419';
+    for (let row = 0; row < moduleCount; row += 1) {
+      let runStart = -1;
+      for (let column = 0; column <= moduleCount; column += 1) {
+        const isDark = column < moduleCount && matrix[row]?.[column];
+        if (isDark && runStart < 0) {
+          runStart = column;
+        } else if (!isDark && runStart >= 0) {
+          context.fillRect(
+            render.originX + runStart * render.moduleSize,
+            render.originY + row * render.moduleSize,
+            (column - runStart) * render.moduleSize,
+            render.moduleSize,
+          );
+          runStart = -1;
+        }
+      }
+    }
+  }
+
+  function drawSourceGuide(context, sourceGuide, qrMatrix) {
+    if (!sourceGuide || !qrMatrix.length) return;
+    const { rect, qrRect } = sourceGuide;
+    context.save();
+
+    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 26);
+    context.fillStyle = '#0f1419';
+    context.fill();
+
+    context.textAlign = 'left';
+    context.textBaseline = 'alphabetic';
+    context.fillStyle = '#1d9bf0';
+    context.font = `700 30px ${FONT_STACK}`;
+    context.fillText(sourceGuide.label, sourceGuide.textX, sourceGuide.labelBaselineY);
+
+    context.fillStyle = '#cfd9df';
+    context.font = `400 23px ${FONT_STACK}`;
+    context.fillText(
+      fitCanvasText(context, sourceGuide.url, qrRect.x - sourceGuide.textX - 36),
+      sourceGuide.textX,
+      sourceGuide.urlBaselineY,
+    );
+
+    roundedRectPath(context, qrRect.x, qrRect.y, qrRect.width, qrRect.height, 18);
+    context.fillStyle = '#ffffff';
+    context.fill();
+    context.strokeStyle = 'rgba(255,255,255,0.32)';
+    context.lineWidth = 2;
+    context.stroke();
+    drawQrModules(context, qrMatrix, qrRect);
+
+    context.restore();
+  }
+
   async function renderShareCard(rawTweet) {
     const tweet = normalizeTweetData(rawTweet);
     const measureCanvas = document.createElement('canvas');
@@ -1280,6 +1411,9 @@
         },
       },
     );
+    const qrMatrix = layout.sourceGuide
+      ? createQrMatrix(layout.sourceGuide.url)
+      : [];
     const canvas = document.createElement('canvas');
     canvas.width = layout.canvasWidth;
     canvas.height = layout.canvasHeight;
@@ -1378,6 +1512,8 @@
       context.textAlign = 'right';
       context.font = `600 25px ${FONT_STACK}`;
       context.fillText('X · SHARE CARD', layout.contentX + layout.contentWidth, layout.footerTop + 25);
+
+      drawSourceGuide(context, layout.sourceGuide, qrMatrix);
     } finally {
       for (const asset of [...primaryAssets.loaded, ...contextAssets.loaded]) asset?.revoke?.();
     }

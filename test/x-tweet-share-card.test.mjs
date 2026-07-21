@@ -28,6 +28,7 @@ test('normalizes extracted tweet data into a stable share-card model', () => {
   assert.deepEqual(tweet, {
     authorName: 'Ada Lovelace',
     handle: '@ada_dev',
+    isVerified: false,
     text: 'First line\n\nSecond line',
     avatarUrl: 'https://pbs.twimg.com/profile_images/avatar_400x400.jpg',
     mediaUrls: [
@@ -38,6 +39,7 @@ test('normalizes extracted tweet data into a stable share-card model', () => {
     ],
     publishedAt: '2026-07-21T04:05:06.000Z',
     statusUrl: 'https://x.com/ada_dev/status/1234567890',
+    videoPosterUrl: '',
   });
 });
 
@@ -82,6 +84,7 @@ test('extracts the visible post from an X tweet article without private APIs', (
   };
   const handleSpan = { textContent: '@ada_dev' };
   const nameBlock = {
+    querySelector: (selector) => selector === '[data-testid="icon-verified"]' ? {} : null,
     querySelectorAll: (selector) => selector === 'a[href]' ? [profileLink] : [handleSpan],
   };
   const selectors = new Map([
@@ -103,6 +106,7 @@ test('extracts the visible post from an X tweet article without private APIs', (
   assert.deepEqual(core.extractTweetData(article), {
     authorName: 'Ada Lovelace',
     handle: '@ada_dev',
+    isVerified: true,
     text: 'A testable share card 🚀',
     avatarUrl: 'https://pbs.twimg.com/profile_images/a_400x400.jpg',
     mediaUrls: [
@@ -111,6 +115,49 @@ test('extracts the visible post from an X tweet article without private APIs', (
     ],
     publishedAt: '2026-07-21T04:05:06.000Z',
     statusUrl: 'https://x.com/ada_dev/status/1234567890',
+    videoPosterUrl: '',
+  });
+});
+
+test('uses the visible X video poster as card media and ignores profile images', () => {
+  const posterUrl = 'https://pbs.twimg.com/amplify_video_thumb/123/img/poster.jpg';
+  const video = {
+    poster: posterUrl,
+    getAttribute: (name) => name === 'poster' ? posterUrl : null,
+  };
+  const posterPlayer = {
+    querySelector: (selector) => selector === 'video[poster]' ? video : null,
+    querySelectorAll: () => [],
+  };
+  const fallbackPlayer = {
+    querySelector: () => null,
+    querySelectorAll: (selector) => selector === 'img[src]'
+      ? [
+          { src: 'https://pbs.twimg.com/profile_images/456/avatar_mini.jpg' },
+          { src: 'https://pbs.twimg.com/ext_tw_video_thumb/123/pu/img/fallback.jpg' },
+        ]
+      : [],
+  };
+  const articleWithPlayer = (player) => ({
+    querySelector: (selector) => selector === '[data-testid="videoPlayer"]' ? player : null,
+  });
+
+  assert.equal(core.extractVideoPosterUrl(articleWithPlayer(posterPlayer)), posterUrl);
+  assert.equal(
+    core.extractVideoPosterUrl(articleWithPlayer(fallbackPlayer)),
+    'https://pbs.twimg.com/ext_tw_video_thumb/123/pu/img/fallback.jpg',
+  );
+
+  assert.deepEqual(core.normalizeTweetData({ videoPosterUrl: posterUrl }), {
+    authorName: '',
+    handle: '',
+    isVerified: false,
+    text: '',
+    avatarUrl: '',
+    mediaUrls: ['https://pbs.twimg.com/amplify_video_thumb/123/img/poster.jpg?name=large'],
+    publishedAt: '',
+    statusUrl: '',
+    videoPosterUrl: 'https://pbs.twimg.com/amplify_video_thumb/123/img/poster.jpg?name=large',
   });
 });
 
@@ -162,6 +209,41 @@ test('renders single images in full and gives every media cell a visible border'
     borderWidth: 3,
     fit: 'cover',
   });
+});
+
+test('centers a readable play mark over video poster media', () => {
+  const overlay = core.getVideoPlayOverlayLayout({ x: 100, y: 200, width: 1000, height: 600 });
+
+  assert.equal(overlay.centerX, 600);
+  assert.equal(overlay.centerY, 500);
+  assert.equal(overlay.diameter, 108);
+  assert.ok(overlay.triangle[0].x > overlay.centerX - overlay.diameter / 4);
+});
+
+test('uses the current official X and verified glyphs at card-friendly sizes', () => {
+  const xLogo = core.getBrandLogoConfig();
+  const verified = core.getVerifiedBadgeConfig();
+
+  assert.equal(xLogo.size, 58);
+  assert.equal(xLogo.viewBoxSize, 24);
+  assert.match(xLogo.path, /^M21\.742 21\.75/);
+  assert.equal(verified.size, 32);
+  assert.equal(verified.viewBoxSize, 22);
+  assert.match(verified.path, /^M20\.396 11/);
+});
+
+test('gives the injected share-menu item a theme-aware hover and focus background', () => {
+  const styleText = core.getShareMenuStyleText();
+
+  assert.match(styleText, /\[data-tsc-action="share-card"\]:hover/);
+  assert.match(styleText, /\[data-tsc-action="share-card"\]:focus-visible/);
+  assert.match(styleText, /color-mix\(in srgb,currentColor 12%,transparent\)/);
+});
+
+test('does not render clipped outer shadows around the share poster or modal', () => {
+  assert.doesNotMatch(scriptText, /context\.shadowColor\s*=/);
+  assert.doesNotMatch(scriptText, /\.modal\{[^}]*box-shadow:/s);
+  assert.doesNotMatch(scriptText, /\.preview\{[^}]*box-shadow:/s);
 });
 
 test('recognizes only the native X tweet share menu as an injection target', () => {

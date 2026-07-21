@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.1
+// @version      0.1.2
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -57,6 +57,8 @@
       if (url && !mediaUrls.includes(url)) mediaUrls.push(url);
       if (mediaUrls.length === 4) break;
     }
+    const videoPosterUrl = normalizeMediaUrl(value.videoPosterUrl);
+    if (!mediaUrls.length && videoPosterUrl) mediaUrls.push(videoPosterUrl);
 
     const rawHandle = String(value.handle || '').trim().replace(/^@+/, '');
     const handle = /^[A-Za-z0-9_]{1,15}$/.test(rawHandle) ? `@${rawHandle}` : '';
@@ -67,12 +69,61 @@
     return {
       authorName: String(value.authorName || '').trim(),
       handle,
+      isVerified: Boolean(value.isVerified),
       text: String(value.text || '').trim(),
       avatarUrl: normalizeAvatarUrl(value.avatarUrl),
       mediaUrls,
       publishedAt,
       statusUrl: normalizeStatusUrl(value.statusUrl),
+      videoPosterUrl,
     };
+  }
+
+  function isLikelyVideoPosterUrl(value) {
+    if (!value) return false;
+    try {
+      const url = new URL(String(value), 'https://x.com');
+      if (!/^https?:$/.test(url.protocol)) return false;
+      return !url.pathname.includes('/profile_images/')
+        && /(?:video_thumb|\/media\/)/i.test(url.pathname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function extractBackgroundImageUrl(value) {
+    const match = String(value || '').match(/url\(["']?([^"')]+)["']?\)/i);
+    return match ? match[1] : '';
+  }
+
+  function extractVideoPosterUrl(article) {
+    if (!article || typeof article.querySelector !== 'function') return '';
+    const player = article.querySelector('[data-testid="videoPlayer"]');
+    if (!player) return '';
+
+    const video = typeof player.querySelector === 'function'
+      ? player.querySelector('video[poster]')
+      : null;
+    const poster = video ? (video.poster || video.getAttribute?.('poster') || '') : '';
+    if (isLikelyVideoPosterUrl(poster)) return poster;
+
+    const images = typeof player.querySelectorAll === 'function'
+      ? Array.from(player.querySelectorAll('img[src]'))
+      : [];
+    for (const image of images) {
+      const src = image.currentSrc || image.src || image.getAttribute?.('src') || '';
+      if (isLikelyVideoPosterUrl(src)) return src;
+    }
+
+    const styledNodes = typeof player.querySelectorAll === 'function'
+      ? Array.from(player.querySelectorAll('[style*="background-image"]'))
+      : [];
+    for (const node of styledNodes) {
+      const src = extractBackgroundImageUrl(node.style?.backgroundImage || node.getAttribute?.('style'));
+      if (isLikelyVideoPosterUrl(src)) return src;
+    }
+
+    return '';
   }
 
   function wrapText(value, maxWidth, measureText) {
@@ -180,6 +231,9 @@
     const authorName = String(profileLink?.textContent || '')
       .replace(/\s+/g, ' ')
       .trim();
+    const verifiedIcon = nameBlock?.querySelector?.('[data-testid="icon-verified"]')
+      || nameBlock?.querySelector?.('svg[aria-label="认证账号"]')
+      || nameBlock?.querySelector?.('svg[aria-label="Verified account"]');
 
     const textNode = article.querySelector('[data-testid="tweetText"]');
     const avatar = article.querySelector('[data-testid="Tweet-User-Avatar"] img[src]');
@@ -190,15 +244,18 @@
     const mediaNodes = typeof article.querySelectorAll === 'function'
       ? Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] img[src]'))
       : [];
+    const videoPosterUrl = extractVideoPosterUrl(article);
 
     return normalizeTweetData({
       authorName,
       handle: handleText || (handleFromHref ? handleFromHref[1] : ''),
+      isVerified: Boolean(verifiedIcon),
       text: textNode ? (textNode.innerText || textNode.textContent || '') : '',
       avatarUrl: avatar ? (avatar.currentSrc || avatar.src || avatar.getAttribute?.('src') || '') : '',
       mediaUrls: mediaNodes.map((node) => node.currentSrc || node.src || node.getAttribute?.('src') || ''),
       publishedAt: time?.getAttribute?.('datetime') || '',
       statusUrl: statusAnchor?.getAttribute?.('href') || '',
+      videoPosterUrl,
     });
   }
 
@@ -293,12 +350,62 @@
     };
   }
 
+  function getShareMenuStyleText() {
+    return `
+      [data-tsc-action="share-card"] {
+        transition: background-color 0.15s ease;
+      }
+      [data-tsc-action="share-card"]:hover,
+      [data-tsc-action="share-card"]:focus-visible {
+        background-color: rgba(127,127,127,0.14) !important;
+        background-color: color-mix(in srgb,currentColor 12%,transparent) !important;
+      }
+    `;
+  }
+
+  function getVideoPlayOverlayLayout(rect) {
+    const diameter = Math.min(112, Math.max(68, Math.min(rect.width, rect.height) * 0.18));
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    return {
+      centerX,
+      centerY,
+      diameter,
+      triangle: [
+        { x: centerX - diameter * 0.1, y: centerY - diameter * 0.18 },
+        { x: centerX - diameter * 0.1, y: centerY + diameter * 0.18 },
+        { x: centerX + diameter * 0.22, y: centerY },
+      ],
+    };
+  }
+
+  function getBrandLogoConfig() {
+    return {
+      path: 'M21.742 21.75l-7.563-11.179 7.056-8.321h-2.456l-5.691 6.714-4.54-6.714H2.359l7.29 10.776L2.25 21.75h2.456l6.035-7.118 4.818 7.118h6.191-.008zM7.739 3.818L18.81 20.182h-2.447L5.29 3.818h2.447z',
+      size: 58,
+      viewBoxSize: 24,
+    };
+  }
+
+  function getVerifiedBadgeConfig() {
+    return {
+      path: 'M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.854-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.688-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.634.433 1.218.877 1.688.47.443 1.054.747 1.687.878.633.132 1.29.084 1.897-.136.274.586.705 1.084 1.246 1.439.54.354 1.17.551 1.816.569.647-.016 1.276-.213 1.817-.567s.972-.854 1.245-1.44c.604.239 1.266.296 1.903.164.636-.132 1.22-.447 1.68-.907.46-.46.776-1.044.908-1.681s.075-1.299-.165-1.903c.586-.274 1.084-.705 1.439-1.246.354-.54.551-1.17.569-1.816zM9.662 14.85l-3.429-3.428 1.293-1.302 2.072 2.072 4.4-4.794 1.347 1.246z',
+      size: 32,
+      viewBoxSize: 22,
+    };
+  }
+
   const core = {
     buildCardLayout,
     extractTweetData,
+    extractVideoPosterUrl,
     findShareMenuAnchor,
     getMediaLayout,
     getMediaRenderConfig,
+    getShareMenuStyleText,
+    getBrandLogoConfig,
+    getVerifiedBadgeConfig,
+    getVideoPlayOverlayLayout,
     isTweetShareButton,
     isTweetShareMenu,
     normalizeTweetData,
@@ -319,6 +426,16 @@
     modalClose: null,
   };
 
+  function installPageStyle() {
+    if (document.querySelector('style[data-tsc-page-style]')) return;
+    const style = document.createElement('style');
+    style.setAttribute('data-tsc-page-style', '');
+    style.textContent = getShareMenuStyleText();
+    (document.head || document.documentElement).append(style);
+  }
+
+  installPageStyle();
+
   function roundedRectPath(context, x, y, width, height, radius) {
     const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
     context.beginPath();
@@ -328,6 +445,55 @@
     context.arcTo(x, y + height, x, y, safeRadius);
     context.arcTo(x, y, x + width, y, safeRadius);
     context.closePath();
+  }
+
+  function drawSvgGlyph(context, config, x, y, color) {
+    if (typeof global.Path2D !== 'function') return false;
+    try {
+      const path = new global.Path2D(config.path);
+      context.save();
+      context.translate(x, y);
+      context.scale(config.size / config.viewBoxSize, config.size / config.viewBoxSize);
+      context.fillStyle = color;
+      context.fill(path);
+      context.restore();
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function drawBrandLogo(context, x, y) {
+    const config = getBrandLogoConfig();
+    if (drawSvgGlyph(context, config, x, y, '#0f1419')) return;
+    context.save();
+    context.fillStyle = '#0f1419';
+    context.font = `700 52px ${FONT_STACK}`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('X', x + config.size / 2, y + config.size / 2);
+    context.restore();
+  }
+
+  function drawVerifiedBadge(context, x, y) {
+    const config = getVerifiedBadgeConfig();
+    if (drawSvgGlyph(context, config, x, y, '#1d9bf0')) return;
+
+    context.save();
+    context.fillStyle = '#1d9bf0';
+    context.beginPath();
+    context.arc(x + config.size / 2, y + config.size / 2, config.size / 2, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 3;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.beginPath();
+    context.moveTo(x + config.size * 0.27, y + config.size * 0.52);
+    context.lineTo(x + config.size * 0.44, y + config.size * 0.68);
+    context.lineTo(x + config.size * 0.75, y + config.size * 0.34);
+    context.stroke();
+    context.restore();
   }
 
   function fitCanvasText(context, value, maxWidth) {
@@ -495,6 +661,27 @@
     context.restore();
   }
 
+  function drawVideoPlayOverlay(context, rect) {
+    const overlay = getVideoPlayOverlayLayout(rect);
+    const radius = overlay.diameter / 2;
+    context.save();
+    context.fillStyle = 'rgba(15,20,25,0.78)';
+    context.strokeStyle = 'rgba(255,255,255,0.94)';
+    context.lineWidth = Math.max(3, overlay.diameter * 0.035);
+    context.beginPath();
+    context.arc(overlay.centerX, overlay.centerY, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#ffffff';
+    context.beginPath();
+    context.moveTo(overlay.triangle[0].x, overlay.triangle[0].y);
+    context.lineTo(overlay.triangle[1].x, overlay.triangle[1].y);
+    context.lineTo(overlay.triangle[2].x, overlay.triangle[2].y);
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+
   function drawAvatar(context, asset, tweet, layout) {
     const rect = {
       x: layout.contentX,
@@ -586,14 +773,12 @@
       context.fill();
       context.restore();
 
-      context.save();
-      context.shadowColor = 'rgba(25, 39, 52, 0.18)';
-      context.shadowBlur = 44;
-      context.shadowOffsetY = 18;
       roundedRectPath(context, layout.card.x, layout.card.y, layout.card.width, layout.card.height, 44);
       context.fillStyle = '#ffffff';
       context.fill();
-      context.restore();
+      context.strokeStyle = 'rgba(15,20,25,0.08)';
+      context.lineWidth = 2;
+      context.stroke();
 
       drawAvatar(context, avatarAsset, tweet, layout);
 
@@ -603,15 +788,28 @@
       context.textBaseline = 'alphabetic';
       context.fillStyle = '#0f1419';
       context.font = `700 38px ${FONT_STACK}`;
-      context.fillText(fitCanvasText(context, tweet.authorName || tweet.handle || 'X 用户', identityWidth), identityX, layout.headerTop + 43);
+      const verifiedConfig = getVerifiedBadgeConfig();
+      const badgeReserve = tweet.isVerified ? verifiedConfig.size + 10 : 0;
+      const displayName = fitCanvasText(
+        context,
+        tweet.authorName || tweet.handle || 'X 用户',
+        identityWidth - badgeReserve,
+      );
+      context.fillText(displayName, identityX, layout.headerTop + 43);
+      if (tweet.isVerified) {
+        const badgeX = identityX + context.measureText(displayName).width + 10;
+        drawVerifiedBadge(context, badgeX, layout.headerTop + 11);
+      }
       context.fillStyle = '#536471';
       context.font = `400 30px ${FONT_STACK}`;
       context.fillText(fitCanvasText(context, tweet.handle, identityWidth), identityX, layout.headerTop + 87);
 
-      context.fillStyle = '#0f1419';
-      context.font = `800 44px ${FONT_STACK}`;
-      context.textAlign = 'right';
-      context.fillText('X', layout.contentX + layout.contentWidth, layout.headerTop + 48);
+      const brandLogo = getBrandLogoConfig();
+      drawBrandLogo(
+        context,
+        layout.contentX + layout.contentWidth - brandLogo.size,
+        layout.headerTop + 8,
+      );
 
       context.textAlign = 'left';
       context.textBaseline = 'alphabetic';
@@ -633,6 +831,9 @@
           drawMediaPlaceholder(context, rect);
         }
         drawMediaBorder(context, rect, mediaRenderConfig);
+        if (tweet.videoPosterUrl && tweet.mediaUrls[index] === tweet.videoPosterUrl) {
+          drawVideoPlayOverlay(context, rect);
+        }
       });
 
       context.strokeStyle = '#eff3f4';
@@ -709,7 +910,7 @@
         *{box-sizing:border-box}
         button{font:inherit}
         .backdrop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:max(18px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));background:rgba(15,20,25,.66);backdrop-filter:blur(10px)}
-        .modal{display:grid;grid-template-rows:auto minmax(0,1fr) auto;width:min(680px,100%);max-height:min(900px,calc(100dvh - 36px));overflow:hidden;border:1px solid rgba(255,255,255,.38);border-radius:28px;background:#f7f9f9;box-shadow:0 28px 90px rgba(0,0,0,.36)}
+        .modal{display:grid;grid-template-rows:auto minmax(0,1fr) auto;width:min(680px,100%);max-height:min(900px,calc(100dvh - 36px));overflow:hidden;border:1px solid rgba(255,255,255,.38);border-radius:28px;background:#f7f9f9}
         .header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:22px 24px 18px;background:rgba(255,255,255,.96);border-bottom:1px solid #eff3f4}
         .eyebrow{margin:0 0 4px;color:#1d9bf0;font-size:12px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
         h2{margin:0;font-size:22px;line-height:1.25;letter-spacing:-.02em}
@@ -718,7 +919,7 @@
         .close:hover{background:#dfe5e8;transform:rotate(4deg)}
         .close:focus-visible,.button:focus-visible{outline:3px solid rgba(29,155,240,.32);outline-offset:2px}
         .preview-shell{min-height:280px;overflow:auto;padding:24px;background:linear-gradient(135deg,#eef8ff 0%,#f7f9f9 48%,#f4efff 100%);overscroll-behavior:contain}
-        .preview{display:block;width:100%;height:auto;border-radius:18px;box-shadow:0 12px 36px rgba(15,20,25,.16)}
+        .preview{display:block;width:100%;height:auto;border-radius:18px}
         .preview[hidden]{display:none}
         .loading{display:grid;place-items:center;align-content:center;gap:16px;min-height:330px;color:#536471;text-align:center}
         .loading[hidden]{display:none}

@@ -6,6 +6,24 @@
 
 ## 脚本列表
 
+### X 推文分享卡片
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js)
+
+在 X 推文原生分享菜单中增加“生成分享图”入口：
+
+- 将作者、账号、正文、发布时间和最多 4 张推文图片排版成独立卡片。
+- 在弹窗中预览生成结果，并直接复制 PNG 到剪贴板。
+- 浏览器不支持图片剪贴板或复制被拒绝时，可下载 PNG 作为兜底。
+- 只读取页面已经展示的推文内容，图片在当前浏览器内生成，不调用 X 私有接口，也不会上传推文数据。
+
+当前优先支持普通单条文字/图片推文；视频、投票、复杂引用和长 Thread 只按页面可读取到的正文或封面降级处理。
+
+适用页面：
+
+- `https://x.com/*`
+- `https://twitter.com/*`
+
 ### Make X Great Again（跨平台 userscript）
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js)

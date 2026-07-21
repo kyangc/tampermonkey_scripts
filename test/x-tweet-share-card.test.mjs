@@ -91,6 +91,17 @@ test('wraps mixed-language tweet text without losing explicit blank lines', () =
   assert.deepEqual(core.wrapText('abcdefgh', 4, measureText), ['abcd', 'efgh']);
 });
 
+test('fills the current line before breaking an overlong link like CSS text wrapping', () => {
+  const lines = core.wrapText(
+    'Twitch: https://twitch.tv/hitishithefox?twclid=abc',
+    20,
+    (value) => Array.from(value).length,
+  );
+
+  assert.equal(lines[0], 'Twitch: https://twit');
+  assert.equal(lines.join(''), 'Twitch: https://twitch.tv/hitishithefox?twclid=abc');
+});
+
 test('marks mentions, hashtags, and links as accented tweet text without changing the copy', () => {
   const text = '普通文字 @alice #分享图 https://example.com/docs.';
   const segments = core.getTweetTextSegments(text);
@@ -125,12 +136,14 @@ test('keeps every wrapped part of a long link accented', () => {
     (value) => Array.from(value).length,
   );
 
-  assert.equal(lines[0].map((run) => run.text).join(''), '去看');
+  assert.equal(lines[0].map((run) => run.text).join(''), '去看 https:/');
   assert.equal(
-    lines.slice(1).flatMap((line) => line).map((run) => run.text).join(''),
+    lines.flatMap((line) => line)
+      .filter((run) => run.kind === 'accent')
+      .map((run) => run.text)
+      .join(''),
     'https://example.com/verylong',
   );
-  assert.equal(lines.slice(1).flatMap((line) => line).every((run) => run.kind === 'accent'), true);
 });
 
 test('carries accented text runs into both primary and nested tweet layouts', () => {
@@ -267,6 +280,34 @@ test('extracts the visible post from an X tweet article without private APIs', (
     videoPosterUrl: '',
     context: null,
   });
+});
+
+test('removes layout-only line breaks inside a visible tweet link during extraction', () => {
+  const splitLink = 'https://\ntwitch.tv/hitishithefox\n?twclid=abc';
+  const link = { innerText: splitLink, textContent: splitLink };
+  const tweetText = {
+    innerText: `Twitch:\n${splitLink}`,
+    textContent: `Twitch:\n${splitLink}`,
+    closest: () => null,
+    querySelectorAll: (selector) => selector === 'a[href]' ? [link] : [],
+  };
+  const article = {
+    querySelector: (selector) => selector === '[data-testid="tweetText"]' ? tweetText : null,
+    querySelectorAll: (selector) => selector === '[data-testid="tweetText"]' ? [tweetText] : [],
+  };
+
+  const extracted = core.extractTweetData(article);
+
+  assert.equal(
+    extracted.text,
+    'Twitch:\nhttps://twitch.tv/hitishithefox?twclid=abc',
+  );
+  assert.deepEqual(
+    core.getTweetTextSegments(extracted.text)
+      .filter((segment) => segment.kind === 'accent')
+      .map((segment) => segment.text),
+    ['https://twitch.tv/hitishithefox?twclid=abc'],
+  );
 });
 
 test('extracts an X quoted tweet without mixing its text or images into the outer tweet', () => {

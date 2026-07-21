@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.2
+// @version      0.2.3
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -322,15 +322,20 @@
           continue;
         }
 
-        if (lineText.trimEnd()) lines.push(trimTextRunsEnd(lineRuns));
-        lineRuns = [];
-        lineText = '';
+        if (measureText(tokenText) <= maxWidth) {
+          if (lineText.trimEnd()) lines.push(trimTextRunsEnd(lineRuns));
+          lineRuns = [];
+          lineText = '';
+          for (const run of token.runs) appendTextRun(lineRuns, run.text, run.kind);
+          lineText = tokenText;
+          continue;
+        }
 
         for (const run of token.runs) {
           for (const grapheme of Array.from(run.text)) {
             const next = `${lineText}${grapheme}`;
             if (lineText && measureText(next) > maxWidth) {
-              lines.push(lineRuns);
+              lines.push(trimTextRunsEnd(lineRuns));
               lineRuns = [];
               lineText = '';
             }
@@ -427,6 +432,23 @@
     return none;
   }
 
+  function extractVisibleTweetText(textNode) {
+    if (!textNode) return '';
+    let text = String(textNode.innerText || textNode.textContent || '');
+    const links = typeof textNode.querySelectorAll === 'function'
+      ? Array.from(textNode.querySelectorAll('a[href]'))
+      : [];
+
+    for (const link of links) {
+      const visibleLinkText = String(link.innerText || link.textContent || '');
+      if (!visibleLinkText.includes('\n')) continue;
+      const compactLinkText = visibleLinkText.replace(/\s+/gu, '');
+      if (!compactLinkText) continue;
+      text = text.replace(visibleLinkText, compactLinkText);
+    }
+    return text;
+  }
+
   function extractTweetFields(root, excludedRoots = []) {
     const nameBlock = queryScopedNode(root, '[data-testid="User-Name"]', excludedRoots)
       || queryScopedNode(root, '[data-testid="UserName"]', excludedRoots);
@@ -464,7 +486,7 @@
       authorName,
       handle: handleText || (handleFromHref ? handleFromHref[1] : ''),
       isVerified: Boolean(verifiedIcon),
-      text: textNode ? (textNode.innerText || textNode.textContent || '') : '',
+      text: extractVisibleTweetText(textNode),
       avatarUrl: avatar ? (avatar.currentSrc || avatar.src || avatar.getAttribute?.('src') || '') : '',
       mediaUrls: mediaNodes.map((node) => node.currentSrc || node.src || node.getAttribute?.('src') || ''),
       publishedAt: time?.getAttribute?.('datetime') || '',

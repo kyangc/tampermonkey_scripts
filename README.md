@@ -1,5 +1,7 @@
 # 油猴脚本
 
+[![Userscript checks](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml/badge.svg)](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml)
+
 这是我个人使用的 Tampermonkey / 油猴脚本仓库。
 
 ## 脚本列表
@@ -114,6 +116,8 @@ iOS / iPadOS 安装：
 ```bash
 npm run check
 ```
+
+推送到 `main` 或创建 Pull Request 后，[GitHub Actions](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 会在只读权限下自动运行同一套检查；检查通过不等于 iOS 真机验收通过。
 
 校验油猴脚本发布元信息：
 

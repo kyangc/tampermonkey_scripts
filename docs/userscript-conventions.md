@@ -48,7 +48,8 @@ npm run check
 ```
 
 6. 提交并推送到 `main`。
-7. 在浏览器里点击 README 的 raw 安装链接确认 Tampermonkey 能正常安装或更新。
+7. 确认 [Userscript checks](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 已通过。
+8. 在浏览器里点击 README 的 raw 安装链接确认 Tampermonkey 能正常安装或更新。
 
 ## 更新已有脚本流程
 
@@ -62,6 +63,7 @@ npm run check
 ```
 
 5. 提交并推送到 `main`。
+6. 确认 [Userscript checks](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 已通过。
 
 ## 本地校验
 

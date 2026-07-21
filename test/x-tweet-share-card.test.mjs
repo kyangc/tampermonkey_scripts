@@ -136,6 +136,34 @@ test('grows the share card around wrapped text before placing tweet media', () =
   assert.ok(long.mediaRects.every((rect) => rect.x + rect.width <= long.card.x + long.card.width));
 });
 
+test('preserves the full aspect ratio of a single tall tweet image', () => {
+  const measureText = (value) => Array.from(value).length * 42;
+  const tweet = { text: 'Tall image', mediaUrls: ['one'] };
+
+  const portrait = core.buildCardLayout(tweet, measureText, { singleMediaAspectRatio: 3 });
+  const extreme = core.buildCardLayout(tweet, measureText, { singleMediaAspectRatio: 20 });
+
+  assert.equal(portrait.mediaRects[0].height / portrait.mediaRects[0].width, 3);
+  assert.ok(portrait.mediaRects[0].height > 600);
+  assert.equal(extreme.mediaRects[0].height / extreme.mediaRects[0].width, 20);
+  assert.equal(extreme.mediaRects[0].width, extreme.contentWidth);
+  assert.equal(extreme.mediaRects[0].height, extreme.contentWidth * 20);
+  assert.equal(extreme.mediaRects[0].x, extreme.contentX);
+});
+
+test('renders single images in full and gives every media cell a visible border', () => {
+  assert.deepEqual(core.getMediaRenderConfig(1), {
+    borderColor: '#cfd9df',
+    borderWidth: 3,
+    fit: 'contain',
+  });
+  assert.deepEqual(core.getMediaRenderConfig(4), {
+    borderColor: '#cfd9df',
+    borderWidth: 3,
+    fit: 'cover',
+  });
+});
+
 test('recognizes only the native X tweet share menu as an injection target', () => {
   const shareMenu = {
     querySelector: (selector) => selector.includes('copyLinkToTweet') ? {} : null,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.0
+// @version      0.1.1
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -202,7 +202,7 @@
     });
   }
 
-  function buildCardLayout(tweet, measureText) {
+  function buildCardLayout(tweet, measureText, options = {}) {
     const canvasWidth = 1200;
     const outerMargin = 54;
     const card = {
@@ -223,7 +223,11 @@
       : allTextLines;
     const textHeight = textLines.length * textLineHeight;
     const mediaCount = Math.min(4, Array.isArray(tweet?.mediaUrls) ? tweet.mediaUrls.length : 0);
-    const mediaHeight = mediaCount ? (mediaCount === 1 ? 600 : 620) : 0;
+    const singleMediaAspectRatio = Number(options.singleMediaAspectRatio);
+    let mediaHeight = mediaCount ? (mediaCount === 1 ? 600 : 620) : 0;
+    if (mediaCount === 1 && singleMediaAspectRatio > 0) {
+      mediaHeight = contentWidth * singleMediaAspectRatio;
+    }
     const mediaTop = textTop + textHeight + (textLines.length ? 42 : 0);
     const mediaRects = getMediaLayout(mediaCount, {
       x: contentX,
@@ -281,11 +285,20 @@
     return /^(?:share post|分享帖子|分享貼文|ポストを共有|게시물 공유하기|partager le post|compartir post|post teilen|condividi post|compartilhar post)$/i.test(label);
   }
 
+  function getMediaRenderConfig(count) {
+    return {
+      borderColor: '#cfd9df',
+      borderWidth: 3,
+      fit: Number(count) === 1 ? 'contain' : 'cover',
+    };
+  }
+
   const core = {
     buildCardLayout,
     extractTweetData,
     findShareMenuAnchor,
     getMediaLayout,
+    getMediaRenderConfig,
     isTweetShareButton,
     isTweetShareMenu,
     normalizeTweetData,
@@ -443,6 +456,45 @@
     context.restore();
   }
 
+  function drawImageContain(context, image, rect, radius = 0) {
+    const imageWidth = image.naturalWidth || image.width;
+    const imageHeight = image.naturalHeight || image.height;
+    if (!(imageWidth > 0) || !(imageHeight > 0)) return;
+
+    const scale = Math.min(rect.width / imageWidth, rect.height / imageHeight);
+    const drawWidth = imageWidth * scale;
+    const drawHeight = imageHeight * scale;
+    const drawX = rect.x + (rect.width - drawWidth) / 2;
+    const drawY = rect.y + (rect.height - drawHeight) / 2;
+
+    context.save();
+    if (radius) {
+      roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, radius);
+      context.clip();
+    }
+    context.fillStyle = '#f7f9f9';
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    context.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+    context.restore();
+  }
+
+  function drawMediaBorder(context, rect, config) {
+    const inset = config.borderWidth / 2;
+    context.save();
+    roundedRectPath(
+      context,
+      rect.x + inset,
+      rect.y + inset,
+      rect.width - config.borderWidth,
+      rect.height - config.borderWidth,
+      22 - inset,
+    );
+    context.strokeStyle = config.borderColor;
+    context.lineWidth = config.borderWidth;
+    context.stroke();
+    context.restore();
+  }
+
   function drawAvatar(context, asset, tweet, layout) {
     const rect = {
       x: layout.contentX,
@@ -483,9 +535,6 @@
     roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 22);
     context.fillStyle = '#eff3f4';
     context.fill();
-    context.strokeStyle = '#d8e0e5';
-    context.lineWidth = 2;
-    context.stroke();
     context.fillStyle = '#8b98a5';
     context.font = `600 30px ${FONT_STACK}`;
     context.textAlign = 'center';
@@ -499,19 +548,27 @@
     const measureCanvas = document.createElement('canvas');
     const measureContext = measureCanvas.getContext('2d');
     measureContext.font = `400 42px ${FONT_STACK}`;
-    const layout = buildCardLayout(tweet, (text) => measureContext.measureText(text).width);
+    const assetUrls = [tweet.avatarUrl, ...tweet.mediaUrls].filter(Boolean);
+    const loaded = await Promise.all(assetUrls.map((url) => loadImageAsset(url).catch(() => null)));
+    let loadedIndex = 0;
+    const avatarAsset = tweet.avatarUrl ? loaded[loadedIndex++] : null;
+    const mediaAssets = tweet.mediaUrls.map(() => loaded[loadedIndex++] || null);
+    const singleMediaImage = mediaAssets.length === 1 ? mediaAssets[0]?.image : null;
+    const singleMediaAspectRatio = singleMediaImage
+      ? (singleMediaImage.naturalHeight || singleMediaImage.height)
+        / (singleMediaImage.naturalWidth || singleMediaImage.width)
+      : undefined;
+    const layout = buildCardLayout(
+      tweet,
+      (text) => measureContext.measureText(text).width,
+      { singleMediaAspectRatio },
+    );
     const canvas = document.createElement('canvas');
     canvas.width = layout.canvasWidth;
     canvas.height = layout.canvasHeight;
     const context = canvas.getContext('2d');
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
-
-    const assetUrls = [tweet.avatarUrl, ...tweet.mediaUrls].filter(Boolean);
-    const loaded = await Promise.all(assetUrls.map((url) => loadImageAsset(url).catch(() => null)));
-    let loadedIndex = 0;
-    const avatarAsset = tweet.avatarUrl ? loaded[loadedIndex++] : null;
-    const mediaAssets = tweet.mediaUrls.map(() => loaded[loadedIndex++] || null);
 
     try {
       const background = context.createLinearGradient(0, 0, layout.canvasWidth, layout.canvasHeight);
@@ -565,10 +622,17 @@
         if (line) context.fillText(line, layout.contentX, layout.textTop + (index + 1) * layout.textLineHeight - 10);
       }
 
+      const mediaRenderConfig = getMediaRenderConfig(layout.mediaRects.length);
       layout.mediaRects.forEach((rect, index) => {
         const asset = mediaAssets[index];
-        if (asset?.image) drawImageCover(context, asset.image, rect, 22);
-        else drawMediaPlaceholder(context, rect);
+        if (asset?.image && mediaRenderConfig.fit === 'contain') {
+          drawImageContain(context, asset.image, rect, 22);
+        } else if (asset?.image) {
+          drawImageCover(context, asset.image, rect, 22);
+        } else {
+          drawMediaPlaceholder(context, rect);
+        }
+        drawMediaBorder(context, rect, mediaRenderConfig);
       });
 
       context.strokeStyle = '#eff3f4';

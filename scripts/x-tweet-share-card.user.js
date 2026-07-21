@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.0
+// @version      0.3.1
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -661,25 +661,26 @@
       : primaryContentBottom;
     const footerTop = contentBottom + 56;
     const footerHeight = 38;
+    const cardBottom = footerTop + footerHeight + padding;
     const sourceUrl = normalizeStatusUrl(tweet?.statusUrl);
     const sourceGuide = sourceUrl
       ? (() => {
           const rect = {
             x: contentX,
-            y: footerTop + footerHeight + 38,
+            y: cardBottom + 42,
             width: contentWidth,
-            height: 176,
+            height: 136,
           };
           const qrSize = 136;
           return {
             label: '扫码查看详情',
             url: sourceUrl,
             rect,
-            textX: rect.x + 30,
-            labelBaselineY: rect.y + 68,
-            urlBaselineY: rect.y + 118,
+            textX: rect.x,
+            labelBaselineY: rect.y + 52,
+            urlBaselineY: rect.y + 98,
             qrRect: {
-              x: rect.x + rect.width - qrSize - 20,
+              x: rect.x + rect.width - qrSize,
               y: rect.y + (rect.height - qrSize) / 2,
               width: qrSize,
               height: qrSize,
@@ -687,14 +688,14 @@
           };
         })()
       : null;
-    const cardBottom = sourceGuide
-      ? sourceGuide.rect.y + sourceGuide.rect.height + padding
-      : footerTop + footerHeight + padding;
     card.height = cardBottom - card.y;
+    const canvasContentBottom = sourceGuide
+      ? sourceGuide.rect.y + sourceGuide.rect.height
+      : cardBottom;
 
     return {
       canvasWidth,
-      canvasHeight: cardBottom + outerMargin,
+      canvasHeight: canvasContentBottom + outerMargin,
       card,
       avatarRect,
       brandLogoRect,
@@ -1354,12 +1355,8 @@
 
   function drawSourceGuide(context, sourceGuide, qrMatrix) {
     if (!sourceGuide || !qrMatrix.length) return;
-    const { rect, qrRect } = sourceGuide;
+    const { qrRect } = sourceGuide;
     context.save();
-
-    roundedRectPath(context, rect.x, rect.y, rect.width, rect.height, 26);
-    context.fillStyle = '#0f1419';
-    context.fill();
 
     context.textAlign = 'left';
     context.textBaseline = 'alphabetic';
@@ -1367,7 +1364,7 @@
     context.font = `700 30px ${FONT_STACK}`;
     context.fillText(sourceGuide.label, sourceGuide.textX, sourceGuide.labelBaselineY);
 
-    context.fillStyle = '#cfd9df';
+    context.fillStyle = '#536471';
     context.font = `400 23px ${FONT_STACK}`;
     context.fillText(
       fitCanvasText(context, sourceGuide.url, qrRect.x - sourceGuide.textX - 36),
@@ -1375,12 +1372,6 @@
       sourceGuide.urlBaselineY,
     );
 
-    roundedRectPath(context, qrRect.x, qrRect.y, qrRect.width, qrRect.height, 18);
-    context.fillStyle = '#ffffff';
-    context.fill();
-    context.strokeStyle = 'rgba(255,255,255,0.32)';
-    context.lineWidth = 2;
-    context.stroke();
     drawQrModules(context, qrMatrix, qrRect);
 
     context.restore();
@@ -1509,9 +1500,6 @@
       context.font = `400 27px ${FONT_STACK}`;
       context.textAlign = 'left';
       context.fillText(formatPublishedAt(tweet.publishedAt), layout.contentX, layout.footerTop + 25);
-      context.textAlign = 'right';
-      context.font = `600 25px ${FONT_STACK}`;
-      context.fillText('X · SHARE CARD', layout.contentX + layout.contentWidth, layout.footerTop + 25);
 
       drawSourceGuide(context, layout.sourceGuide, qrMatrix);
     } finally {

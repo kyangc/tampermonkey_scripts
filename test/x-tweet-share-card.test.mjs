@@ -513,16 +513,27 @@ test('adds a two-line source guide and right-aligned QR area for the copied twee
 
   assert.equal(layout.sourceGuide.label, '扫码查看详情');
   assert.equal(layout.sourceGuide.url, statusUrl);
-  assert.equal(layout.sourceGuide.rect.y > layout.footerTop, true);
+  assert.equal(layout.sourceGuide.rect.y > layout.card.y + layout.card.height, true);
+  assert.equal(layout.sourceGuide.textX, layout.contentX);
   assert.equal(
     layout.sourceGuide.qrRect.x + layout.sourceGuide.qrRect.width,
-    layout.sourceGuide.rect.x + layout.sourceGuide.rect.width - 20,
+    layout.contentX + layout.contentWidth,
   );
   assert.equal(
     layout.sourceGuide.qrRect.y + layout.sourceGuide.qrRect.height / 2,
     layout.sourceGuide.rect.y + layout.sourceGuide.rect.height / 2,
   );
   assert.equal(layout.canvasHeight > layout.sourceGuide.rect.y + layout.sourceGuide.rect.height, true);
+});
+
+test('ends the shadowed card at the date and draws the source guide without a panel', () => {
+  const sourceGuideBody = scriptText.match(
+    /function drawSourceGuide[\s\S]*?(?=\n\s*async function renderShareCard)/,
+  )?.[0] || '';
+
+  assert.doesNotMatch(scriptText, /fillText\('X · SHARE CARD'/);
+  assert.doesNotMatch(sourceGuideBody, /roundedRectPath\(context, rect\.x/);
+  assert.doesNotMatch(sourceGuideBody, /context\.fillStyle\s*=\s*'#0f1419';\s*context\.fill\(\)/);
 });
 
 test('encodes the copied tweet URL into a local QR matrix with medium error correction', () => {

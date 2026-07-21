@@ -91,6 +91,97 @@ test('wraps mixed-language tweet text without losing explicit blank lines', () =
   assert.deepEqual(core.wrapText('abcdefgh', 4, measureText), ['abcd', 'efgh']);
 });
 
+test('marks mentions, hashtags, and links as accented tweet text without changing the copy', () => {
+  const text = '普通文字 @alice #分享图 https://example.com/docs.';
+  const segments = core.getTweetTextSegments(text);
+
+  assert.deepEqual(segments, [
+    { text: '普通文字 ', kind: 'text' },
+    { text: '@alice', kind: 'accent' },
+    { text: ' ', kind: 'text' },
+    { text: '#分享图', kind: 'accent' },
+    { text: ' ', kind: 'text' },
+    { text: 'https://example.com/docs', kind: 'accent' },
+    { text: '.', kind: 'text' },
+  ]);
+  assert.equal(segments.map((segment) => segment.text).join(''), text);
+});
+
+test('colors a display-link query and fragment without treating an email as a mention', () => {
+  const text = '邮箱 me@example.com，链接 example.com?q=share#preview。';
+  const segments = core.getTweetTextSegments(text);
+
+  assert.deepEqual(
+    segments.filter((segment) => segment.kind === 'accent').map((segment) => segment.text),
+    ['example.com?q=share#preview'],
+  );
+  assert.equal(segments.map((segment) => segment.text).join(''), text);
+});
+
+test('keeps every wrapped part of a long link accented', () => {
+  const lines = core.wrapTweetTextRuns(
+    '去看 https://example.com/verylong',
+    10,
+    (value) => Array.from(value).length,
+  );
+
+  assert.equal(lines[0].map((run) => run.text).join(''), '去看');
+  assert.equal(
+    lines.slice(1).flatMap((line) => line).map((run) => run.text).join(''),
+    'https://example.com/verylong',
+  );
+  assert.equal(lines.slice(1).flatMap((line) => line).every((run) => run.kind === 'accent'), true);
+});
+
+test('carries accented text runs into both primary and nested tweet layouts', () => {
+  const layout = core.buildCardLayout(
+    {
+      text: '主推文 @alice example.com/docs',
+      context: {
+        kind: 'quote',
+        tweet: { text: '引用内容 #分享图', mediaUrls: [] },
+      },
+    },
+    (value) => Array.from(value).length,
+    { contextMeasureText: (value) => Array.from(value).length },
+  );
+
+  assert.deepEqual(
+    layout.textLineRuns.flat().filter((run) => run.kind === 'accent').map((run) => run.text),
+    ['@alice', 'example.com/docs'],
+  );
+  assert.deepEqual(
+    layout.contextLayout.textLineRuns.flat().filter((run) => run.kind === 'accent').map((run) => run.text),
+    ['#分享图'],
+  );
+});
+
+test('draws accented tweet text in X blue while preserving inline positions', () => {
+  const calls = [];
+  const context = {
+    fillStyle: '',
+    fillText(text, x, y) {
+      calls.push({ text, x, y, color: this.fillStyle });
+    },
+    measureText(text) {
+      return { width: Array.from(text).length * 10 };
+    },
+  };
+
+  const endX = core.drawTweetTextRuns(context, [
+    { text: '联系 ', kind: 'text' },
+    { text: '@alice', kind: 'accent' },
+    { text: ' #话题', kind: 'accent' },
+  ], 20, 80);
+
+  assert.deepEqual(calls, [
+    { text: '联系 ', x: 20, y: 80, color: '#0f1419' },
+    { text: '@alice', x: 50, y: 80, color: '#1d9bf0' },
+    { text: ' #话题', x: 110, y: 80, color: '#1d9bf0' },
+  ]);
+  assert.equal(endX, 150);
+});
+
 test('lays out one to four tweet images as a balanced card grid', () => {
   const area = { x: 0, y: 0, width: 1000, height: 600, gap: 12 };
 

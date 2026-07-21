@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Tweet Share Card
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.1
+// @version      0.2.2
 // @description  Generate a polished, copyable image card from an X post's share menu.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -200,53 +200,177 @@
     }) || null;
   }
 
-  function wrapText(value, maxWidth, measureText) {
+  const TWEET_TEXT_ENTITY_PATTERN = /https?:\/\/[^\s<]+|www\.[^\s<]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:[/?#][^\s<]*)?|@[a-z0-9_]{1,15}|#[\p{L}\p{M}\p{N}_]+/giu;
+  const TRAILING_LINK_PUNCTUATION_PATTERN = /[.,!?;:'"…，。！？；：、\])}>》】）]+$/u;
+
+  function appendTextRun(runs, text, kind = 'text') {
+    if (!text) return;
+    const previous = runs.at(-1);
+    if (previous?.kind === kind) {
+      previous.text += text;
+    } else {
+      runs.push({ text, kind });
+    }
+  }
+
+  function getTweetTextSegments(value) {
     const text = String(value || '');
     if (!text) return [];
-    if (!(maxWidth > 0) || typeof measureText !== 'function') return [text];
+
+    const segments = [];
+    let cursor = 0;
+
+    for (const match of text.matchAll(TWEET_TEXT_ENTITY_PATTERN)) {
+      const matchedText = match[0];
+      const start = match.index;
+      const end = start + matchedText.length;
+      const isMention = matchedText.startsWith('@');
+      const isHashtag = matchedText.startsWith('#');
+      const previousCharacter = text[start - 1] || '';
+      const nextCharacter = text[end] || '';
+
+      if (isMention && (/[A-Za-z0-9_.]/u.test(previousCharacter) || /[A-Za-z0-9_]/u.test(nextCharacter))) {
+        continue;
+      }
+      if (!isMention && !isHashtag && previousCharacter === '@') continue;
+
+      appendTextRun(segments, text.slice(cursor, start));
+      if (isMention || isHashtag) {
+        appendTextRun(segments, matchedText, 'accent');
+      } else {
+        const trailingPunctuation = matchedText.match(TRAILING_LINK_PUNCTUATION_PATTERN)?.[0] || '';
+        appendTextRun(
+          segments,
+          matchedText.slice(0, matchedText.length - trailingPunctuation.length),
+          'accent',
+        );
+        appendTextRun(segments, trailingPunctuation);
+      }
+      cursor = end;
+    }
+
+    appendTextRun(segments, text.slice(cursor));
+    return segments;
+  }
+
+  function getStyledWordTokens(value) {
+    const tokens = [];
+    let wordRuns = [];
+    const flushWord = () => {
+      if (!wordRuns.length) return;
+      tokens.push({ type: 'word', runs: wordRuns });
+      wordRuns = [];
+    };
+
+    for (const segment of getTweetTextSegments(value)) {
+      for (const chunk of segment.text.match(/\s+|[^\s]+/gu) || []) {
+        if (/^\s+$/u.test(chunk)) {
+          flushWord();
+          tokens.push({ type: 'space', runs: [] });
+        } else {
+          appendTextRun(wordRuns, chunk, segment.kind);
+        }
+      }
+    }
+    flushWord();
+    return tokens;
+  }
+
+  function trimTextRunsEnd(runs) {
+    const trimmed = runs.map((run) => ({ ...run }));
+    while (trimmed.length) {
+      const last = trimmed.at(-1);
+      last.text = last.text.replace(/\s+$/u, '');
+      if (last.text) break;
+      trimmed.pop();
+    }
+    return trimmed;
+  }
+
+  function wrapTweetTextRuns(value, maxWidth, measureText) {
+    const text = String(value || '');
+    if (!text) return [];
+    if (!(maxWidth > 0) || typeof measureText !== 'function') {
+      return [getTweetTextSegments(text)];
+    }
 
     const lines = [];
     for (const paragraph of text.split('\n')) {
       if (!paragraph) {
-        lines.push('');
+        lines.push([]);
         continue;
       }
 
-      const tokens = paragraph.match(/\s+|[^\s]+/gu) || [];
-      let line = '';
+      const tokens = getStyledWordTokens(paragraph);
+      let lineRuns = [];
+      let lineText = '';
 
       for (const token of tokens) {
-        if (/^\s+$/u.test(token)) {
-          if (line && !line.endsWith(' ')) line += ' ';
+        if (token.type === 'space') {
+          if (lineText && !lineText.endsWith(' ')) {
+            appendTextRun(lineRuns, ' ');
+            lineText += ' ';
+          }
           continue;
         }
 
-        const candidate = `${line}${token}`;
-        if (!line || measureText(candidate) <= maxWidth) {
-          if (measureText(candidate) <= maxWidth) {
-            line = candidate;
-            continue;
-          }
+        const tokenText = token.runs.map((run) => run.text).join('');
+        const candidate = `${lineText}${tokenText}`;
+        if (measureText(candidate) <= maxWidth) {
+          for (const run of token.runs) appendTextRun(lineRuns, run.text, run.kind);
+          lineText = candidate;
+          continue;
         }
 
-        if (line.trimEnd()) lines.push(line.trimEnd());
-        line = '';
+        if (lineText.trimEnd()) lines.push(trimTextRunsEnd(lineRuns));
+        lineRuns = [];
+        lineText = '';
 
-        for (const grapheme of Array.from(token)) {
-          const next = `${line}${grapheme}`;
-          if (line && measureText(next) > maxWidth) {
-            lines.push(line);
-            line = grapheme;
-          } else {
-            line = next;
+        for (const run of token.runs) {
+          for (const grapheme of Array.from(run.text)) {
+            const next = `${lineText}${grapheme}`;
+            if (lineText && measureText(next) > maxWidth) {
+              lines.push(lineRuns);
+              lineRuns = [];
+              lineText = '';
+            }
+            appendTextRun(lineRuns, grapheme, run.kind);
+            lineText += grapheme;
           }
         }
       }
 
-      if (line.trimEnd()) lines.push(line.trimEnd());
+      if (lineText.trimEnd()) lines.push(trimTextRunsEnd(lineRuns));
     }
 
     return lines;
+  }
+
+  function wrapText(value, maxWidth, measureText) {
+    return wrapTweetTextRuns(value, maxWidth, measureText)
+      .map((runs) => runs.map((run) => run.text).join(''));
+  }
+
+  function addEllipsisToTextRuns(runs) {
+    const result = runs.map((run) => ({ ...run }));
+    while (result.length) {
+      const last = result.at(-1);
+      last.text = last.text.replace(/[\s…]+$/u, '');
+      if (last.text) break;
+      result.pop();
+    }
+    appendTextRun(result, '…');
+    return result;
+  }
+
+  function drawTweetTextRuns(context, runs, x, y) {
+    let cursorX = x;
+    for (const run of runs) {
+      context.fillStyle = run.kind === 'accent' ? '#1d9bf0' : '#0f1419';
+      context.fillText(run.text, cursorX, y);
+      cursorX += context.measureText(run.text).width;
+    }
+    return cursorX;
   }
 
   function getMediaLayout(count, area) {
@@ -401,7 +525,8 @@
     const contextMeasureText = typeof options.contextMeasureText === 'function'
       ? options.contextMeasureText
       : measureText;
-    const textLines = wrapText(tweet.text, contentWidth, contextMeasureText);
+    const textLineRuns = wrapTweetTextRuns(tweet.text, contentWidth, contextMeasureText);
+    const textLines = textLineRuns.map((runs) => runs.map((run) => run.text).join(''));
     const textLineHeight = 44;
     const textHeight = textLines.length * textLineHeight;
     const mediaCount = Math.min(4, tweet.mediaUrls.length);
@@ -440,6 +565,7 @@
       identityX,
       identityWidth,
       textTop,
+      textLineRuns,
       textLines,
       textLineHeight,
       mediaRects,
@@ -474,10 +600,11 @@
     };
     const textTop = headerTop + headerHeight + 42;
     const textLineHeight = 58;
-    const allTextLines = wrapText(tweet?.text || '', contentWidth, measureText);
-    const textLines = allTextLines.length > 48
-      ? [...allTextLines.slice(0, 47), `${allTextLines[47].replace(/[\s…]+$/u, '')}…`]
-      : allTextLines;
+    const allTextLineRuns = wrapTweetTextRuns(tweet?.text || '', contentWidth, measureText);
+    const textLineRuns = allTextLineRuns.length > 48
+      ? [...allTextLineRuns.slice(0, 47), addEllipsisToTextRuns(allTextLineRuns[47])]
+      : allTextLineRuns;
+    const textLines = textLineRuns.map((runs) => runs.map((run) => run.text).join(''));
     const textHeight = textLines.length * textLineHeight;
     const mediaCount = Math.min(4, Array.isArray(tweet?.mediaUrls) ? tweet.mediaUrls.length : 0);
     const singleMediaAspectRatio = Number(options.singleMediaAspectRatio);
@@ -527,6 +654,7 @@
       headerTop,
       mediaRects,
       textLineHeight,
+      textLineRuns,
       textLines,
       textTop,
     };
@@ -626,6 +754,7 @@
 
   const core = {
     buildCardLayout,
+    drawTweetTextRuns,
     extractTweetData,
     extractVideoPosterUrl,
     findShareMenuAnchor,
@@ -633,6 +762,7 @@
     getMediaRenderConfig,
     getMediaTileRadii,
     getShareMenuStyleText,
+    getTweetTextSegments,
     getBrandLogoConfig,
     getVerifiedBadgeConfig,
     getInlineBadgeTop,
@@ -640,6 +770,7 @@
     isTweetShareButton,
     isTweetShareMenu,
     normalizeTweetData,
+    wrapTweetTextRuns,
     wrapText,
   };
 
@@ -1086,13 +1217,13 @@
       contextLayout.headerTop + 54,
     );
 
-    context.fillStyle = '#0f1419';
     context.font = `400 32px ${FONT_STACK}`;
-    for (let index = 0; index < contextLayout.textLines.length; index += 1) {
-      const line = contextLayout.textLines[index];
-      if (line) {
-        context.fillText(
-          line,
+    for (let index = 0; index < contextLayout.textLineRuns.length; index += 1) {
+      const runs = contextLayout.textLineRuns[index];
+      if (runs.length) {
+        drawTweetTextRuns(
+          context,
+          runs,
           rect.x + 34,
           contextLayout.textTop + (index + 1) * contextLayout.textLineHeight - 8,
         );
@@ -1192,11 +1323,17 @@
 
       context.textAlign = 'left';
       context.textBaseline = 'alphabetic';
-      context.fillStyle = '#0f1419';
       context.font = `400 42px ${FONT_STACK}`;
-      for (let index = 0; index < layout.textLines.length; index += 1) {
-        const line = layout.textLines[index];
-        if (line) context.fillText(line, layout.contentX, layout.textTop + (index + 1) * layout.textLineHeight - 10);
+      for (let index = 0; index < layout.textLineRuns.length; index += 1) {
+        const runs = layout.textLineRuns[index];
+        if (runs.length) {
+          drawTweetTextRuns(
+            context,
+            runs,
+            layout.contentX,
+            layout.textTop + (index + 1) * layout.textLineHeight - 10,
+          );
+        }
       }
 
       drawTweetMedia(context, tweet, primaryAssets.mediaAssets, layout.mediaRects);

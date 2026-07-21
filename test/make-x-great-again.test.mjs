@@ -203,6 +203,35 @@ test('profile-link parsing accepts only direct X account paths', () => {
   assert.equal(core.extractHandleFromHref('/bad-handle'), null);
 });
 
+test('profile badge mount falls back to the semantic public-profile markup used by X', () => {
+  const mount = {};
+  const handleLeaf = {
+    children: [],
+    parentElement: mount,
+    textContent: '@Public_Profile',
+  };
+  const additionalName = {
+    getAttribute: (name) => name === 'content' ? 'Public_Profile' : null,
+  };
+  const person = {
+    contains: (node) => node === mount,
+    querySelector: (selector) => selector === 'meta[itemprop="additionalName"][content]'
+      ? additionalName
+      : null,
+    querySelectorAll: () => [handleLeaf],
+  };
+  const root = {
+    querySelector: (selector) => {
+      if (selector === '[data-testid="UserName"]') return null;
+      if (selector === '[itemprop="mainEntity"][itemtype="https://schema.org/Person"]') return person;
+      return null;
+    },
+  };
+
+  assert.equal(core.findProfileNameBlock(root, 'public_profile'), mount);
+  assert.equal(core.findProfileNameBlock(root, 'different_profile'), null);
+});
+
 test('binary lookup remains correct for underscore-prefixed and mixed-case handles', () => {
   const index = core.createAccountIndex([
     ['', 'Zulu', 'soh'],

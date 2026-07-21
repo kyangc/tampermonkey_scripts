@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.0
+// @version      0.1.1
 // @description  Mark public-list spam accounts on X and hide them locally on PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -424,12 +424,36 @@
     };
   }
 
+  function findProfileNameBlock(root, handle) {
+    if (!root || typeof root.querySelector !== 'function') return null;
+    const standardNameBlock = root.querySelector('[data-testid="UserName"]');
+    if (standardNameBlock) return standardNameBlock;
+
+    const normalized = normalizeHandle(handle);
+    if (!normalized) return null;
+    const person = root.querySelector(
+      '[itemprop="mainEntity"][itemtype="https://schema.org/Person"]',
+    );
+    if (!person || typeof person.querySelector !== 'function') return null;
+    const additionalName = person.querySelector('meta[itemprop="additionalName"][content]');
+    if (normalizeHandle(additionalName?.getAttribute?.('content')) !== normalized) return null;
+
+    for (const candidate of person.querySelectorAll?.('div,span') || []) {
+      if (candidate.children?.length > 0) continue;
+      if (normalizeHandle(candidate.textContent) !== normalized) continue;
+      const mount = candidate.parentElement;
+      if (mount && person.contains?.(mount)) return mount;
+    }
+    return null;
+  }
+
   const core = {
     createAccountIndex,
     createHiddenRegistry,
     createListSynchronizer,
     decodeEntry,
     extractHandleFromHref,
+    findProfileNameBlock,
     getAccountPresentation,
     normalizeHandle,
     STORAGE_KEYS,
@@ -1130,10 +1154,10 @@
     }
 
     function processProfile() {
-      const nameBlock = document.querySelector('[data-testid="UserName"]');
-      if (!nameBlock) return;
       const firstSegment = global.location.pathname.split('/').filter(Boolean)[0] || '';
       const handle = extractHandleFromHref('/' + firstSegment);
+      const nameBlock = findProfileNameBlock(document, handle);
+      if (!nameBlock) return;
       if (!state.settings.enabled || !handle) {
         clearBadgeMounts(nameBlock);
         return;

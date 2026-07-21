@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const core = require('../scripts/make-x-great-again.user.js');
+const scriptText = readFileSync(new URL('../scripts/make-x-great-again.user.js', import.meta.url), 'utf8');
+
+function metadataValues(key) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...scriptText.matchAll(new RegExp(`^//\\s+@${escapedKey}\\s+(.+)$`, 'gm'))]
+    .map((match) => match[1].trim());
+}
 
 test('official whitelist wins over a blacklist match regardless of handle casing', () => {
   const index = core.createAccountIndex(
@@ -205,4 +213,20 @@ test('binary lookup remains correct for underscore-prefixed and mixed-case handl
   assert.equal(index.lookup({ handle: '_LEADING' }).normalizedHandle, '_leading');
   assert.equal(index.lookup({ handle: 'alpha' }).normalizedHandle, 'alpha');
   assert.equal(index.lookup({ handle: 'zulu' }).normalizedHandle, 'zulu');
+});
+
+test('metadata exposes the cross-platform interface required by Tampermonkey and iOS Userscripts', () => {
+  assert.deepEqual(metadataValues('inject-into'), ['content']);
+  assert.deepEqual(metadataValues('match'), ['https://x.com/*', 'https://twitter.com/*']);
+  assert.deepEqual(new Set(metadataValues('grant')), new Set([
+    'GM.getValue',
+    'GM.setValue',
+    'GM.deleteValue',
+    'GM.xmlHttpRequest',
+    'GM.openInTab',
+  ]));
+  assert.deepEqual(metadataValues('updateURL'), [
+    'https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js',
+  ]);
+  assert.deepEqual(metadataValues('downloadURL'), metadataValues('updateURL'));
 });

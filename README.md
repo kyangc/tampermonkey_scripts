@@ -40,7 +40,7 @@ iOS / iPadOS 安装：
 4. 粘贴上面的 raw 安装链接，保存并启用脚本。
 5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
 
-兼容性状态：PC 端浏览器夹具与线上名单解析已验证；iOS Userscripts 的真实设备内存、安装更新和触控流程仍是正式兼容性验收门槛。
+兼容性状态：PC 端浏览器夹具、Safari JavaScriptCore 和线上名单解析已验证；iOS Userscripts 的真实设备内存、安装更新和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
 
 ### M-Team 种子列表增强
 

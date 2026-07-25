@@ -98,6 +98,57 @@ test('returns null when the selected quote no longer exists', () => {
   assert.equal(core.locateTextAnchor('正文已经完全重写。', anchor), null);
 });
 
+test('restores changed whitespace and punctuation without review', () => {
+  const original = '前文：Agent 的设计，需要稳定。后文继续。';
+  const exact = 'Agent 的设计，需要稳定';
+  const start = original.indexOf(exact);
+  const anchor = core.buildTextAnchor(original, start, start + exact.length);
+  const changed = '前文：Agent 的设计需要稳定！后文继续。';
+  const located = core.locateTextAnchor(changed, anchor);
+
+  assert.equal(located.strategy, 'normalized-quote');
+  assert.equal(located.needsReview, false);
+  assert.equal(changed.slice(located.start, located.end), 'Agent 的设计需要稳定');
+});
+
+test('returns a review-only fuzzy candidate when selected words changed', () => {
+  const original = '前文：Agent 的设计需要遵循清晰、稳定并且可验证的原则。后文继续讨论。';
+  const exact = 'Agent 的设计需要遵循清晰、稳定并且可验证的原则';
+  const start = original.indexOf(exact);
+  const anchor = core.buildTextAnchor(original, start, start + exact.length);
+  const changed = '前文：Agent 的架构需要遵循清晰稳定并且可验证的原则！后文继续讨论。';
+  const located = core.locateTextAnchor(changed, anchor);
+
+  assert.equal(located.strategy, 'fuzzy-quote');
+  assert.equal(located.needsReview, true);
+  assert.match(changed.slice(located.start, located.end), /Agent 的架构/);
+});
+
+test('re-anchors a note while preserving its previous quote history', () => {
+  const current = annotation();
+  const nextText = '新版 Agent 系统架构';
+  const nextAnchor = core.buildTextAnchor(nextText, 3, nextText.length);
+  const replaced = core.replaceAnnotationAnchor(current, nextAnchor, {
+    changedAt: '2026-07-25T10:00:00.000Z',
+    confidence: 0.93,
+    reason: 'confirmed',
+    strategy: 'fuzzy-quote',
+  });
+
+  assert.equal(replaced.anchor.exact, 'Agent 系统架构');
+  assert.equal(replaced.anchorHistory.length, 1);
+  assert.equal(replaced.anchorHistory[0].exact, 'Agent 架构');
+  assert.equal(replaced.anchorHistory[0].reason, 'confirmed');
+  assert.deepEqual(replaced.relocation, {
+    at: '2026-07-25T10:00:00.000Z',
+    confidence: 0.93,
+    strategy: 'fuzzy-quote',
+  });
+  assert.match(core.createMarkdownExport([replaced]), /\*\*关联前原文\*\*/);
+  assert.match(core.createMarkdownExport([replaced]), /> Agent 架构/);
+  assert.match(core.createHtmlExport([replaced]), /关联前原文（1）/);
+});
+
 test('creates deterministic brush variations with subtle bounded jitter', () => {
   const first = core.getBrushStrokeVariation('annotation-1', 0);
   const repeated = core.getBrushStrokeVariation('annotation-1', 0);
@@ -208,7 +259,7 @@ test('normalizes, filters, and sorts stored annotations', () => {
   });
 
   assert.deepEqual(store.annotations.map((item) => item.id), ['earlier-page', 'later']);
-  assert.equal(store.schemaVersion, 1);
+  assert.equal(store.schemaVersion, 2);
 });
 
 test('groups annotations by chapter in book order', () => {

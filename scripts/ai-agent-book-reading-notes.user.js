@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.0
-// @description  Highlight, annotate, export, and end-to-end encrypt notes across devices.
+// @version      0.3.0
+// @description  Highlight, annotate, resiliently re-anchor, export, and end-to-end encrypt notes across devices.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
 // @supportURL   https://github.com/kyangc/tampermonkey_scripts/issues
@@ -25,10 +25,14 @@
   'use strict';
 
   const CONFIG = Object.freeze({
+    anchorVersion: 2,
+    autoRelocateConfidence: 0.9,
     bookTitle: 'AI Agents in Depth',
     contextLength: 64,
+    maxAnchorHistory: 8,
+    maxBlockTextLength: 4000,
     maxSelectionLength: 6000,
-    schemaVersion: 1,
+    schemaVersion: 2,
     storageKey: 'ai-agent-book:reading-notes:v1',
     syncStorageKey: 'ai-agent-book:reading-notes-sync:v1',
     uiHostId: 'aab-reading-notes-host',
@@ -93,6 +97,78 @@
       length += 1;
     }
     return length;
+  }
+
+  function normalizeAnchorText(value) {
+    let output = '';
+    for (const character of String(value || '')) {
+      const normalized = character.normalize('NFKC').toLocaleLowerCase();
+      for (const normalizedCharacter of normalized) {
+        if (/[\p{White_Space}\p{P}]/u.test(normalizedCharacter)) continue;
+        output += normalizedCharacter;
+      }
+    }
+    return output;
+  }
+
+  function buildNormalizedTextMap(value) {
+    const source = String(value || '');
+    const offsets = [];
+    const ends = [];
+    let text = '';
+    let sourceOffset = 0;
+
+    for (const character of source) {
+      const normalized = character.normalize('NFKC').toLocaleLowerCase();
+      const characterEnd = sourceOffset + character.length;
+      for (const normalizedCharacter of normalized) {
+        if (/[\p{White_Space}\p{P}]/u.test(normalizedCharacter)) continue;
+        text += normalizedCharacter;
+        offsets.push(sourceOffset);
+        ends.push(characterEnd);
+      }
+      sourceOffset = characterEnd;
+    }
+
+    return { ends, offsets, text };
+  }
+
+  function bigramDiceSimilarity(left, right) {
+    const first = String(left || '');
+    const second = String(right || '');
+    if (first === second) return 1;
+    if (!first || !second) return 0;
+    if (first.length === 1 || second.length === 1) return first === second ? 1 : 0;
+
+    const counts = new Map();
+    for (let index = 0; index < first.length - 1; index += 1) {
+      const bigram = first.slice(index, index + 2);
+      counts.set(bigram, (counts.get(bigram) || 0) + 1);
+    }
+
+    let overlap = 0;
+    for (let index = 0; index < second.length - 1; index += 1) {
+      const bigram = second.slice(index, index + 2);
+      const remaining = counts.get(bigram) || 0;
+      if (!remaining) continue;
+      overlap += 1;
+      counts.set(bigram, remaining - 1);
+    }
+
+    return (2 * overlap) / (first.length + second.length - 2);
+  }
+
+  function headingPathSimilarity(left, right) {
+    const first = Array.isArray(left) ? left.map(normalizeAnchorText).filter(Boolean) : [];
+    const second = Array.isArray(right) ? right.map(normalizeAnchorText).filter(Boolean) : [];
+    if (!first.length || !second.length) return 0;
+    const limit = Math.min(first.length, second.length);
+    let matches = 0;
+    for (let index = 1; index <= limit; index += 1) {
+      if (first[first.length - index] !== second[second.length - index]) break;
+      matches += 1;
+    }
+    return matches / Math.max(first.length, second.length);
   }
 
   function hashString(value) {
@@ -373,7 +449,225 @@
     };
   }
 
-  function locateTextAnchor(text, anchor) {
+  function originalOffsetToNormalizedIndex(map, offset) {
+    const target = Math.max(0, Number(offset) || 0);
+    let low = 0;
+    let high = map.offsets.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (map.offsets[middle] < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function mapNormalizedRange(map, start, end) {
+    if (
+      !map
+      || start < 0
+      || end <= start
+      || start >= map.offsets.length
+      || end > map.ends.length
+    ) {
+      return null;
+    }
+    return {
+      end: map.ends[end - 1],
+      start: map.offsets[start],
+    };
+  }
+
+  function blockScoreForRange(anchor, blocks, start, end) {
+    const saved = anchor?.block;
+    if (!saved || !Array.isArray(blocks) || !blocks.length) return 0;
+    const current = blocks.find((block) => start >= block.start && end <= block.end);
+    if (!current) return 0;
+
+    const savedText = normalizeAnchorText(saved.text);
+    const currentText = normalizeAnchorText(current.text);
+    const textScore = savedText && currentText
+      ? bigramDiceSimilarity(savedText, currentText)
+      : 0;
+    const tagScore = saved.tag && saved.tag === current.tag ? 1 : 0;
+    const headingScore = headingPathSimilarity(saved.headingPath, current.headingPath);
+    return textScore * 0.68 + headingScore * 0.22 + tagScore * 0.1;
+  }
+
+  function findNormalizedQuote(source, anchor, options = {}) {
+    const map = buildNormalizedTextMap(source);
+    const exact = normalizeAnchorText(anchor?.exact);
+    if (!map.text || !exact) return null;
+
+    const prefix = normalizeAnchorText(anchor.prefix);
+    const suffix = normalizeAnchorText(anchor.suffix);
+    const preferredStart = Number.isFinite(Number(anchor.start))
+      ? originalOffsetToNormalizedIndex(map, anchor.start)
+      : null;
+    const candidates = [];
+    let searchFrom = 0;
+
+    while (searchFrom <= map.text.length - exact.length && candidates.length < 500) {
+      const index = map.text.indexOf(exact, searchFrom);
+      if (index === -1) break;
+      const mapped = mapNormalizedRange(map, index, index + exact.length);
+      if (!mapped) break;
+
+      const before = map.text.slice(Math.max(0, index - prefix.length), index);
+      const after = map.text.slice(index + exact.length, index + exact.length + suffix.length);
+      const availableContext = prefix.length + suffix.length;
+      const contextScore = commonSuffixLength(before, prefix) + commonPrefixLength(after, suffix);
+      const contextRatio = availableContext ? contextScore / availableContext : 0;
+      const structuralScore = blockScoreForRange(
+        anchor,
+        options.blocks,
+        mapped.start,
+        mapped.end,
+      );
+      const distance = preferredStart === null ? 0 : Math.abs(index - preferredStart);
+
+      candidates.push({
+        ...mapped,
+        contextRatio,
+        distance,
+        rankScore: contextRatio * 0.72 + structuralScore * 0.28,
+      });
+      searchFrom = index + Math.max(1, exact.length);
+    }
+
+    if (!candidates.length) return null;
+    candidates.sort((left, right) => (
+      right.rankScore - left.rankScore
+      || left.distance - right.distance
+      || left.start - right.start
+    ));
+
+    const best = candidates[0];
+    const unique = candidates.length === 1;
+    const confidence = unique ? 0.96 : Math.min(0.94, 0.76 + best.rankScore * 0.2);
+    return {
+      confidence,
+      end: best.end,
+      needsReview: !unique && best.rankScore < 0.55,
+      start: best.start,
+      strategy: 'normalized-quote',
+    };
+  }
+
+  function findFuzzyQuote(source, anchor, options = {}) {
+    const map = buildNormalizedTextMap(source);
+    const target = normalizeAnchorText(anchor?.exact);
+    if (!map.text || target.length < 16 || target.length > 800) return null;
+
+    const maxDelta = clamp(Math.ceil(target.length * 0.1), 2, 14);
+    const seedLength = clamp(Math.floor(target.length / 5), 6, 18);
+    const seedOffsets = new Set([
+      0,
+      Math.max(0, Math.floor(target.length * 0.25) - Math.floor(seedLength / 2)),
+      Math.max(0, Math.floor(target.length * 0.5) - Math.floor(seedLength / 2)),
+      Math.max(0, Math.floor(target.length * 0.75) - Math.floor(seedLength / 2)),
+      Math.max(0, target.length - seedLength),
+    ]);
+    const candidateStarts = new Set();
+    const preferredStart = Number.isFinite(Number(anchor.start))
+      ? originalOffsetToNormalizedIndex(map, anchor.start)
+      : null;
+    if (preferredStart !== null) candidateStarts.add(preferredStart);
+
+    for (const seedOffset of seedOffsets) {
+      const seed = target.slice(seedOffset, seedOffset + seedLength);
+      let from = 0;
+      let matches = 0;
+      while (seed && matches < 30) {
+        const found = map.text.indexOf(seed, from);
+        if (found === -1) break;
+        candidateStarts.add(Math.max(0, found - seedOffset));
+        from = found + Math.max(1, seed.length);
+        matches += 1;
+      }
+    }
+
+    const shifts = [...new Set([
+      -maxDelta,
+      -Math.floor(maxDelta / 2),
+      0,
+      Math.floor(maxDelta / 2),
+      maxDelta,
+    ])];
+    const lengths = [...new Set([
+      target.length - maxDelta,
+      target.length - Math.floor(maxDelta / 2),
+      target.length,
+      target.length + Math.floor(maxDelta / 2),
+      target.length + maxDelta,
+    ])].filter((length) => length > 0);
+    const prefix = normalizeAnchorText(anchor.prefix);
+    const suffix = normalizeAnchorText(anchor.suffix);
+    const availableContext = prefix.length + suffix.length;
+    const evaluated = new Map();
+
+    for (const estimatedStart of [...candidateStarts].slice(0, 80)) {
+      for (const shift of shifts) {
+        const start = clamp(estimatedStart + shift, 0, map.text.length);
+        for (const length of lengths) {
+          const end = Math.min(map.text.length, start + length);
+          if (end <= start) continue;
+          const candidateText = map.text.slice(start, end);
+          const quoteSimilarity = bigramDiceSimilarity(target, candidateText);
+          if (quoteSimilarity < 0.72) continue;
+          const mapped = mapNormalizedRange(map, start, end);
+          if (!mapped) continue;
+
+          const before = map.text.slice(Math.max(0, start - prefix.length), start);
+          const after = map.text.slice(end, end + suffix.length);
+          const contextScore = commonSuffixLength(before, prefix)
+            + commonPrefixLength(after, suffix);
+          const contextRatio = availableContext ? contextScore / availableContext : 0;
+          const structuralScore = blockScoreForRange(
+            anchor,
+            options.blocks,
+            mapped.start,
+            mapped.end,
+          );
+          const confidence = quoteSimilarity * 0.82
+            + contextRatio * 0.12
+            + structuralScore * 0.06;
+          const key = `${mapped.start}:${mapped.end}`;
+          const candidate = {
+            ...mapped,
+            confidence,
+            quoteSimilarity,
+          };
+          if (!evaluated.has(key) || evaluated.get(key).confidence < confidence) {
+            evaluated.set(key, candidate);
+          }
+        }
+      }
+    }
+
+    const candidates = [...evaluated.values()]
+      .filter((candidate) => candidate.confidence >= 0.78)
+      .sort((left, right) => (
+        right.confidence - left.confidence
+        || Math.abs(left.start - Number(anchor.start || 0))
+          - Math.abs(right.start - Number(anchor.start || 0))
+      ));
+    if (!candidates.length) return null;
+
+    const best = candidates[0];
+    const runnerUp = candidates.find((candidate) => (
+      Math.abs(candidate.start - best.start) > Math.max(4, target.length * 0.25)
+    ));
+    const margin = runnerUp ? best.confidence - runnerUp.confidence : 1;
+    return {
+      confidence: Math.min(0.94, best.confidence),
+      end: best.end,
+      needsReview: best.confidence < CONFIG.autoRelocateConfidence || margin < 0.04,
+      start: best.start,
+      strategy: 'fuzzy-quote',
+    };
+  }
+
+  function locateTextAnchor(text, anchor, options = {}) {
     const source = String(text || '');
     const exact = String(anchor?.exact || '');
     if (!source || !exact) return null;
@@ -424,7 +718,10 @@
       searchFrom = index + Math.max(1, exact.length);
     }
 
-    if (!candidates.length) return null;
+    if (!candidates.length) {
+      return findNormalizedQuote(source, anchor, options)
+        || findFuzzyQuote(source, anchor, options);
+    }
 
     candidates.sort((left, right) => (
       right.contextScore - left.contextScore
@@ -446,6 +743,62 @@
     };
   }
 
+  function normalizeBlockAnchor(value) {
+    if (!value || typeof value !== 'object') return null;
+    const text = String(value.text || '').slice(0, CONFIG.maxBlockTextLength);
+    const tag = String(value.tag || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const rawStart = Number(value.start);
+    const rawEnd = Number(value.end);
+    if (!text || !tag || !Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return null;
+
+    const start = Math.max(0, Math.trunc(rawStart));
+    const end = Math.max(start, Math.trunc(rawEnd));
+    const selectionStart = clamp(
+      Math.trunc(Number(value.selectionStart) || 0),
+      0,
+      Math.max(0, end - start),
+    );
+    const selectionEnd = clamp(
+      Math.trunc(Number(value.selectionEnd) || selectionStart),
+      selectionStart,
+      Math.max(selectionStart, end - start),
+    );
+
+    return {
+      end,
+      headingPath: Array.isArray(value.headingPath)
+        ? value.headingPath.map((item) => String(item || '').trim()).filter(Boolean).slice(-6)
+        : [],
+      index: Math.max(0, Math.trunc(Number(value.index) || 0)),
+      selectionEnd,
+      selectionStart,
+      start,
+      tag,
+      text,
+    };
+  }
+
+  function normalizeAnchorHistory(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(-CONFIG.maxAnchorHistory).map((item) => {
+      const exact = String(item?.exact || '');
+      if (!exact) return null;
+      const start = Math.max(0, Math.trunc(Number(item.start) || 0));
+      const end = Math.max(start + exact.length, Math.trunc(Number(item.end) || 0));
+      return {
+        changedAt: String(item.changedAt || new Date(0).toISOString()),
+        end,
+        exact,
+        prefix: String(item.prefix || ''),
+        reason: ['automatic', 'confirmed', 'manual'].includes(item.reason)
+          ? item.reason
+          : 'manual',
+        start,
+        suffix: String(item.suffix || ''),
+      };
+    }).filter(Boolean);
+  }
+
   function normalizeAnnotation(value) {
     if (!value || typeof value !== 'object') return null;
     const id = String(value.id || '').trim();
@@ -462,14 +815,26 @@
       ? Math.max(start + exact.length, Math.trunc(rawEnd))
       : start + exact.length;
 
+    const block = normalizeBlockAnchor(value.anchor?.block);
+    const relocation = value.relocation && typeof value.relocation === 'object'
+      ? {
+        at: String(value.relocation.at || ''),
+        confidence: clamp(Number(value.relocation.confidence) || 0, 0, 1),
+        strategy: String(value.relocation.strategy || ''),
+      }
+      : null;
+
     return {
       anchor: {
+        anchorVersion: Math.max(1, Math.trunc(Number(value.anchor?.anchorVersion) || 1)),
+        ...(block ? { block } : {}),
         end,
         exact,
         prefix: String(value.anchor?.prefix || ''),
         start,
         suffix: String(value.anchor?.suffix || ''),
       },
+      anchorHistory: normalizeAnchorHistory(value.anchorHistory),
       createdAt: String(value.createdAt || new Date(0).toISOString()),
       id,
       note: String(value.note || '').trim(),
@@ -478,10 +843,51 @@
         : 9999,
       pageTitle: String(value.pageTitle || '未命名章节').trim() || '未命名章节',
       pageUrl,
+      ...(relocation?.at && relocation.strategy ? { relocation } : {}),
       syncConflict: Boolean(value.syncConflict),
       type,
       updatedAt: String(value.updatedAt || value.createdAt || new Date(0).toISOString()),
     };
+  }
+
+  function replaceAnnotationAnchor(annotation, nextAnchor, options = {}) {
+    const current = normalizeAnnotation(annotation);
+    if (!current || !nextAnchor?.exact) return null;
+    const changedAt = String(options.changedAt || new Date().toISOString());
+    const changed = (
+      current.anchor.exact !== nextAnchor.exact
+      || current.anchor.start !== nextAnchor.start
+      || current.anchor.end !== nextAnchor.end
+    );
+    const history = changed
+      ? [
+        ...current.anchorHistory,
+        {
+          changedAt,
+          end: current.anchor.end,
+          exact: current.anchor.exact,
+          prefix: current.anchor.prefix,
+          reason: options.reason || 'manual',
+          start: current.anchor.start,
+          suffix: current.anchor.suffix,
+        },
+      ].slice(-CONFIG.maxAnchorHistory)
+      : current.anchorHistory;
+
+    return normalizeAnnotation({
+      ...current,
+      anchor: nextAnchor,
+      anchorHistory: history,
+      pageOrder: options.pageOrder ?? current.pageOrder,
+      pageTitle: options.pageTitle ?? current.pageTitle,
+      pageUrl: options.pageUrl ?? current.pageUrl,
+      relocation: {
+        at: changedAt,
+        confidence: options.confidence ?? 1,
+        strategy: options.strategy || options.reason || 'manual',
+      },
+      updatedAt: changedAt,
+    });
   }
 
   function compareAnnotations(left, right) {
@@ -575,6 +981,13 @@
         lines.push(`### ${index + 1}. ${ANNOTATION_TYPES[annotation.type]}`, '');
         lines.push(markdownQuote(annotation.anchor.exact), '');
 
+        if (annotation.anchorHistory.length) {
+          lines.push('**关联前原文**', '');
+          for (const item of annotation.anchorHistory.slice().reverse()) {
+            lines.push(markdownQuote(item.exact), '');
+          }
+        }
+
         if (annotation.note) {
           lines.push('**我的观点**', '', annotation.note, '');
         }
@@ -602,6 +1015,14 @@
         const note = annotation.note
           ? `<div class="opinion"><strong>我的观点</strong><p>${escapeHtml(annotation.note)}</p></div>`
           : '';
+        const history = annotation.anchorHistory.length
+          ? `<details class="history">
+              <summary>关联前原文（${annotation.anchorHistory.length}）</summary>
+              ${annotation.anchorHistory.slice().reverse().map((item) => (
+    `<blockquote>${escapeHtml(item.exact)}</blockquote>`
+  )).join('')}
+            </details>`
+          : '';
         return `
           <article class="note-card note-card--${escapeHtml(annotation.type)}">
             <header>
@@ -609,6 +1030,7 @@
               <time>${escapeHtml(formatReadableDate(annotation.createdAt))}</time>
             </header>
             <blockquote>${escapeHtml(annotation.anchor.exact)}</blockquote>
+            ${history}
             ${note}
           </article>`;
       }).join('');
@@ -669,6 +1091,16 @@
     }
     .note-card--underline blockquote { border-color: #4f86c6; }
     .note-card--note blockquote { border-color: #8c6bb1; }
+    .history {
+      margin-top: 14px;
+      color: #736b61;
+      font-size: 15px;
+    }
+    .history summary { cursor: pointer; }
+    .history blockquote {
+      margin-top: 10px;
+      border-color: #b7aa99;
+    }
     .opinion {
       margin-top: 18px;
       padding: 14px 16px;
@@ -708,6 +1140,7 @@
 
   const core = Object.freeze({
     buildTextAnchor,
+    bigramDiceSimilarity,
     calculateCenteredScrollTop,
     compareAnnotations,
     createHtmlExport,
@@ -721,11 +1154,13 @@
     groupAnnotations,
     locateTextAnchor,
     mergeTextLineRects,
+    normalizeAnchorText,
     normalizeAnnotation,
     normalizePageUrl,
     normalizeSyncEndpoint,
     normalizeSyncState,
     normalizeStore,
+    replaceAnnotationAnchor,
     sha256Base64Url,
   });
 
@@ -738,12 +1173,14 @@
   const state = {
     brushLayer: null,
     brushRefreshTimer: null,
+    candidates: new Map(),
     composer: null,
     filter: 'current',
     highlightsSupported: Boolean(global.CSS?.highlights && global.Highlight),
     observer: null,
     pairingTimer: null,
     pendingSelection: null,
+    rebindingAnnotationId: null,
     refreshTimer: null,
     resolved: new Map(),
     root: null,
@@ -1249,6 +1686,99 @@
     };
   }
 
+  const STRUCTURAL_BLOCK_SELECTOR = [
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'p',
+    'li',
+    'blockquote',
+    'pre',
+    'figcaption',
+    'td',
+    'th',
+  ].join(',');
+
+  function getTextOffsetBeforeElement(root, element) {
+    if (!root || !element || !root.contains(element)) return null;
+    try {
+      const probe = document.createRange();
+      probe.selectNodeContents(root);
+      probe.setEnd(element, 0);
+      return probe.toString().length;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function getHeadingPath(root, element) {
+    if (!root || !element) return [];
+    const path = [];
+    for (const heading of root.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
+      if (heading === element || !(heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        continue;
+      }
+      const level = Number(heading.tagName.slice(1));
+      path.length = Math.min(path.length, Math.max(0, level - 1));
+      path[level - 1] = (heading.textContent || '').replace(/¶\s*$/u, '').trim();
+    }
+    return path.filter(Boolean);
+  }
+
+  function semanticBlocks(root) {
+    if (!root) return [];
+    return [...root.querySelectorAll(STRUCTURAL_BLOCK_SELECTOR)].filter((element) => (
+      !element.querySelector(STRUCTURAL_BLOCK_SELECTOR)
+      && Boolean((element.textContent || '').trim())
+    ));
+  }
+
+  function createStructuralBlockAnchor(root, range, selectionStart, selectionEnd) {
+    const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE
+      ? range.endContainer
+      : range.endContainer.parentElement;
+    const startBlock = startElement?.closest?.(STRUCTURAL_BLOCK_SELECTOR);
+    const endBlock = endElement?.closest?.(STRUCTURAL_BLOCK_SELECTOR);
+    if (!startBlock || startBlock !== endBlock || !root.contains(startBlock)) return null;
+
+    const start = getTextOffsetBeforeElement(root, startBlock);
+    const text = startBlock.textContent || '';
+    if (start === null || !text.trim()) return null;
+    const blocks = semanticBlocks(root);
+    return normalizeBlockAnchor({
+      end: start + text.length,
+      headingPath: getHeadingPath(root, startBlock),
+      index: Math.max(0, blocks.indexOf(startBlock)),
+      selectionEnd: selectionEnd - start,
+      selectionStart: selectionStart - start,
+      start,
+      tag: startBlock.tagName.toLowerCase(),
+      text,
+    });
+  }
+
+  function collectStructuralBlocks(root) {
+    return semanticBlocks(root).map((element, index) => {
+      const start = getTextOffsetBeforeElement(root, element);
+      const text = element.textContent || '';
+      if (start === null || !text.trim()) return null;
+      return {
+        end: start + text.length,
+        headingPath: getHeadingPath(root, element),
+        index,
+        start,
+        tag: element.tagName.toLowerCase(),
+        text,
+      };
+    }).filter(Boolean);
+  }
+
   function buildAnchorFromRange(root, range) {
     if (!root || !range || !root.contains(range.startContainer) || !root.contains(range.endContainer)) {
       return null;
@@ -1273,7 +1803,14 @@
       start += leading;
       end -= trailing;
 
-      return buildTextAnchor(source, start, end);
+      const anchor = buildTextAnchor(source, start, end);
+      if (!anchor) return null;
+      const block = createStructuralBlockAnchor(root, range, start, end);
+      return {
+        ...anchor,
+        anchorVersion: CONFIG.anchorVersion,
+        ...(block ? { block } : {}),
+      };
     } catch (_error) {
       return null;
     }
@@ -1455,24 +1992,56 @@
   function renderHighlights() {
     state.root = getArticleRoot();
     state.resolved.clear();
+    state.candidates.clear();
     clearRegisteredHighlights();
     if (!state.root) return;
 
     const currentPageUrl = normalizePageUrl(global.location.href);
     const source = state.root.textContent || '';
+    const blocks = collectStructuralBlocks(state.root);
+    const automaticallyRelocated = [];
 
     for (const annotation of state.store.annotations) {
       if (annotation.pageUrl !== currentPageUrl) continue;
-      const match = locateTextAnchor(source, annotation.anchor);
+      const match = locateTextAnchor(source, annotation.anchor, { blocks });
       if (!match) continue;
       const range = createRangeFromOffsets(state.root, match.start, match.end);
       if (!range) continue;
+
+      if (match.needsReview) {
+        state.candidates.set(annotation.id, {
+          confidence: match.confidence,
+          range,
+          strategy: match.strategy,
+        });
+        continue;
+      }
+
+      if (
+        ['normalized-quote', 'fuzzy-quote'].includes(match.strategy)
+        && match.confidence >= CONFIG.autoRelocateConfidence
+      ) {
+        const nextAnchor = buildAnchorFromRange(state.root, range);
+        const replacement = replaceAnnotationAnchor(annotation, nextAnchor, {
+          confidence: match.confidence,
+          reason: 'automatic',
+          strategy: match.strategy,
+        });
+        if (replacement) {
+          replaceLocalAnnotation(replacement);
+          automaticallyRelocated.push(replacement);
+        }
+      }
 
       state.resolved.set(annotation.id, {
         confidence: match.confidence,
         range,
         strategy: match.strategy,
       });
+    }
+
+    if (automaticallyRelocated.length && persistStore()) {
+      for (const annotation of automaticallyRelocated) queueAnnotationMutation(annotation);
     }
 
     renderHandDrawnMarks();
@@ -2341,6 +2910,22 @@
           color: var(--danger);
           font-size: 12px;
         }
+        .annotation-status--info { color: var(--accent); }
+        .anchor-history {
+          margin-top: 8px;
+          color: var(--muted);
+          font-size: 12px;
+        }
+        .anchor-history summary { cursor: pointer; }
+        .anchor-history blockquote {
+          max-height: 90px;
+          overflow: auto;
+          margin: 6px 0 0;
+          padding: 7px 9px;
+          background: var(--panel);
+          border-left: 2px solid var(--border);
+          white-space: pre-wrap;
+        }
         .annotation-actions {
           display: flex;
           justify-content: flex-end;
@@ -2469,14 +3054,20 @@
         }
       </style>
       <div id="toolbar" role="toolbar" aria-label="选中文本操作" hidden>
-        <button type="button" data-action="add-highlight">
+        <button type="button" data-action="add-highlight" data-toolbar-mode="create">
           <span class="swatch swatch--highlight"></span>高亮
         </button>
-        <button type="button" data-action="add-underline">
+        <button type="button" data-action="add-underline" data-toolbar-mode="create">
           <span class="swatch swatch--underline"></span>划线
         </button>
-        <button type="button" data-action="add-note">
+        <button type="button" data-action="add-note" data-toolbar-mode="create">
           <span class="swatch swatch--note"></span>写批注
+        </button>
+        <button type="button" data-action="apply-rebind" data-toolbar-mode="rebind" hidden>
+          关联到这段文字
+        </button>
+        <button type="button" data-action="cancel-rebind" data-toolbar-mode="rebind" hidden>
+          取消
         </button>
       </div>
       <button id="launcher" type="button" aria-label="打开读书笔记">
@@ -2700,6 +3291,7 @@
     state.ui.list.innerHTML = annotations.map((annotation) => {
       const isCurrentPage = annotation.pageUrl === currentPageUrl;
       const isResolved = !isCurrentPage || state.resolved.has(annotation.id);
+      const candidate = isCurrentPage ? state.candidates.get(annotation.id) : null;
       const note = annotation.note
         ? `<p class="annotation-note">${escapeHtml(annotation.note)}</p>`
         : '';
@@ -2708,6 +3300,29 @@
         : '';
       const edit = annotation.type === 'note'
         ? `<button type="button" data-action="edit-note" data-id="${escapeHtml(annotation.id)}">编辑</button>`
+        : '';
+      const relocation = isResolved && annotation.relocation?.at
+        ? `<p class="annotation-status annotation-status--info">已根据新版原文重新关联 · ${escapeHtml(formatReadableDate(annotation.relocation.at))}</p>`
+        : '';
+      const candidateStatus = candidate
+        ? `<p class="annotation-status annotation-status--info">找到疑似位置（置信度 ${Math.round(candidate.confidence * 100)}%），请确认后再显示。</p>`
+        : '';
+      const unresolvedStatus = !isResolved && !candidate
+        ? '<p class="annotation-status">原文已变化，暂时无法定位；笔记和导出不受影响。</p>'
+        : '';
+      const history = annotation.anchorHistory.length
+        ? `<details class="anchor-history">
+            <summary>查看关联历史（${annotation.anchorHistory.length}）</summary>
+            ${annotation.anchorHistory.slice().reverse().map((item) => (
+    `<blockquote>${escapeHtml(item.exact)}</blockquote>`
+  )).join('')}
+          </details>`
+        : '';
+      const rebind = isCurrentPage
+        ? `<button type="button" data-action="rebind-annotation" data-id="${escapeHtml(annotation.id)}">重新关联</button>`
+        : '';
+      const confirmCandidate = candidate
+        ? `<button type="button" data-action="confirm-candidate" data-id="${escapeHtml(annotation.id)}">确认疑似位置</button>`
         : '';
 
       return `
@@ -2719,8 +3334,13 @@
           <p class="annotation-quote" data-action="goto-annotation" data-id="${escapeHtml(annotation.id)}">${escapeHtml(annotation.anchor.exact)}</p>
           ${note}
           ${conflict}
-          ${isResolved ? '' : '<p class="annotation-status">原文已变化，暂时无法定位；导出不受影响。</p>'}
+          ${relocation}
+          ${candidateStatus}
+          ${unresolvedStatus}
+          ${history}
           <div class="annotation-actions">
+            ${confirmCandidate}
+            ${rebind}
             ${edit}
             <button class="danger" type="button" data-action="delete-annotation" data-id="${escapeHtml(annotation.id)}">删除</button>
           </div>
@@ -2731,6 +3351,10 @@
   function showToolbar(rect) {
     if (!state.ui || !rect) return;
     const toolbar = state.ui.toolbar;
+    const rebinding = Boolean(state.rebindingAnnotationId);
+    for (const button of toolbar.querySelectorAll('[data-toolbar-mode]')) {
+      button.hidden = button.dataset.toolbarMode === 'rebind' ? !rebinding : rebinding;
+    }
     toolbar.hidden = false;
     const desiredLeft = clamp(rect.left + rect.width / 2, 92, global.innerWidth - 92);
     let desiredTop = rect.top - 46;
@@ -2768,6 +3392,85 @@
       ...getPageMeta(),
     };
     showToolbar(range.getBoundingClientRect());
+  }
+
+  function startRebindingAnnotation(id) {
+    const annotation = state.store.annotations.find((item) => item.id === id);
+    if (!annotation) return;
+    if (annotation.pageUrl !== normalizePageUrl(global.location.href)) {
+      showToast('请先打开这条笔记所属的章节。', 'error');
+      return;
+    }
+
+    state.rebindingAnnotationId = id;
+    state.pendingSelection = null;
+    global.getSelection()?.removeAllRanges();
+    closeDrawer();
+    hideToolbar();
+    showToast('请在正文中选择新的对应文字，再点击“关联到这段文字”。');
+  }
+
+  function cancelRebinding() {
+    state.rebindingAnnotationId = null;
+    state.pendingSelection = null;
+    global.getSelection()?.removeAllRanges();
+    hideToolbar();
+    showToast('已取消重新关联。');
+  }
+
+  function persistReanchoredAnnotation(annotation, nextAnchor, options) {
+    const replacement = replaceAnnotationAnchor(annotation, nextAnchor, options);
+    if (!replacement) return false;
+    replaceLocalAnnotation(replacement);
+    if (!persistStore()) return false;
+    queueAnnotationMutation(replacement);
+    return true;
+  }
+
+  function applyRebindSelection() {
+    const annotation = state.store.annotations.find(
+      (item) => item.id === state.rebindingAnnotationId,
+    );
+    const pending = state.pendingSelection;
+    if (!annotation || !pending?.anchor) {
+      showToast('请先在正文中选择新的对应文字。', 'error');
+      return;
+    }
+
+    const success = persistReanchoredAnnotation(annotation, pending.anchor, {
+      ...getPageMeta(),
+      confidence: 1,
+      reason: 'manual',
+      strategy: 'manual',
+    });
+    if (!success) return;
+
+    state.rebindingAnnotationId = null;
+    state.pendingSelection = null;
+    global.getSelection()?.removeAllRanges();
+    hideToolbar();
+    renderHighlights();
+    showToast('已重新关联，并保留旧原文记录。', 'success');
+  }
+
+  function confirmCandidate(id) {
+    const annotation = state.store.annotations.find((item) => item.id === id);
+    const candidate = state.candidates.get(id);
+    if (!annotation || !candidate?.range) return;
+    const nextAnchor = buildAnchorFromRange(state.root, candidate.range);
+    if (!nextAnchor) {
+      showToast('疑似位置已经变化，请重新选择文字。', 'error');
+      return;
+    }
+
+    const success = persistReanchoredAnnotation(annotation, nextAnchor, {
+      confidence: candidate.confidence,
+      reason: 'confirmed',
+      strategy: candidate.strategy,
+    });
+    if (!success) return;
+    renderHighlights();
+    showToast('疑似位置已确认，旧原文已保留。', 'success');
   }
 
   function openDrawer(filter = state.filter) {
@@ -2857,10 +3560,14 @@
     if (action === 'add-highlight') addAnnotation('highlight');
     if (action === 'add-underline') addAnnotation('underline');
     if (action === 'add-note') openComposerForSelection();
+    if (action === 'apply-rebind') applyRebindSelection();
+    if (action === 'cancel-rebind') cancelRebinding();
     if (action === 'close-drawer') closeDrawer();
     if (action === 'close-composer') closeComposer();
     if (action === 'delete-annotation') deleteAnnotation(id);
     if (action === 'edit-note') openComposerForEdit(id);
+    if (action === 'rebind-annotation') startRebindingAnnotation(id);
+    if (action === 'confirm-candidate') confirmCandidate(id);
     if (action === 'goto-annotation') goToAnnotation(id);
     if (action === 'export-markdown') exportNotes('markdown');
     if (action === 'export-html') exportNotes('html');
@@ -3007,6 +3714,7 @@
     });
     document.addEventListener('keyup', (event) => {
       if (event.key === 'Escape') {
+        if (state.rebindingAnnotationId) cancelRebinding();
         hideToolbar();
         closeComposer();
         closeDrawer();

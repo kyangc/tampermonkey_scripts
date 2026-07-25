@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.0
+// @version      0.1.1
 // @description  Highlight, underline, annotate, persist, and export notes from AI Agents in Depth.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -44,6 +44,12 @@
     underline: 'aab-reading-underline',
   });
 
+  const BRUSH_CLIP_PATHS = Object.freeze([
+    'polygon(0% 27%, 1% 14%, 5% 18%, 10% 10%, 18% 14%, 27% 8%, 37% 13%, 48% 9%, 60% 14%, 73% 8%, 85% 13%, 95% 9%, 100% 23%, 100% 76%, 97% 88%, 91% 84%, 83% 92%, 72% 86%, 60% 93%, 47% 87%, 35% 94%, 23% 88%, 12% 93%, 4% 86%, 0% 74%)',
+    'polygon(0% 21%, 3% 12%, 8% 16%, 15% 8%, 24% 14%, 34% 9%, 45% 15%, 57% 8%, 68% 13%, 79% 9%, 90% 15%, 97% 11%, 100% 28%, 99% 82%, 94% 89%, 86% 85%, 77% 93%, 66% 87%, 54% 94%, 42% 88%, 31% 92%, 20% 86%, 10% 91%, 3% 83%, 0% 70%)',
+    'polygon(0% 29%, 2% 17%, 7% 12%, 13% 18%, 21% 9%, 30% 15%, 41% 8%, 52% 14%, 64% 9%, 75% 15%, 87% 8%, 96% 14%, 100% 26%, 100% 73%, 96% 86%, 89% 91%, 80% 85%, 69% 93%, 58% 87%, 46% 94%, 34% 86%, 24% 92%, 14% 87%, 6% 91%, 1% 80%)',
+  ]);
+
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
@@ -77,6 +83,53 @@
       length += 1;
     }
     return length;
+  }
+
+  function hashString(value) {
+    let hash = 2166136261;
+    for (const character of String(value || '')) {
+      hash ^= character.codePointAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  function getBrushStrokeVariation(annotationId, lineIndex) {
+    const seed = hashString(`${annotationId}:${lineIndex}`);
+    return {
+      clipPath: BRUSH_CLIP_PATHS[seed % BRUSH_CLIP_PATHS.length],
+      heightScale: 0.58 + ((seed >>> 8) % 7) / 100,
+      leftPad: 1.8 + ((seed >>> 16) % 8) / 10,
+      rightPad: 2.6 + ((seed >>> 20) % 10) / 10,
+      rotation: (((seed >>> 4) % 13) - 6) / 20,
+      verticalOffset: 0.255 + ((seed >>> 12) % 5) / 100,
+    };
+  }
+
+  function getHandUnderlineVariation(annotationId, lineIndex) {
+    const seed = hashString(`underline:${annotationId}:${lineIndex}`);
+    const point = (shift, base = 4) => {
+      const delta = (((seed >>> shift) % 7) - 3) * 0.18;
+      return Math.round((base + delta) * 100) / 100;
+    };
+    const points = [
+      point(0),
+      point(3),
+      point(6),
+      point(9),
+      point(12),
+      point(15),
+      point(18),
+    ];
+    const ghost = points.map((value, index) => (
+      Math.round((value + 1.15 + (index % 2 ? 0.08 : -0.05)) * 100) / 100
+    ));
+
+    return {
+      ghostPath: `M 1 ${ghost[0]} C 12 ${ghost[1]}, 23 ${ghost[2]}, 35 ${ghost[3]} S 56 ${ghost[4]}, 68 ${ghost[5]} S 88 ${ghost[2]}, 99 ${ghost[6]}`,
+      primaryPath: `M 1 ${points[0]} C 12 ${points[1]}, 23 ${points[2]}, 35 ${points[3]} S 56 ${points[4]}, 68 ${points[5]} S 88 ${points[2]}, 99 ${points[6]}`,
+      rotation: (((seed >>> 21) % 9) - 4) / 25,
+    };
   }
 
   function buildTextAnchor(text, start, end, contextLength = CONFIG.contextLength) {
@@ -431,6 +484,8 @@
     compareAnnotations,
     createHtmlExport,
     createMarkdownExport,
+    getBrushStrokeVariation,
+    getHandUnderlineVariation,
     groupAnnotations,
     locateTextAnchor,
     normalizeAnnotation,
@@ -445,6 +500,8 @@
   if (!global?.document) return;
 
   const state = {
+    brushLayer: null,
+    brushRefreshTimer: null,
     composer: null,
     filter: 'current',
     highlightsSupported: Boolean(global.CSS?.highlights && global.Highlight),
@@ -453,6 +510,8 @@
     refreshTimer: null,
     resolved: new Map(),
     root: null,
+    rootResizeObserver: null,
+    observedRoot: null,
     store: null,
     ui: null,
   };
@@ -495,9 +554,142 @@
 
   function installGlobalStyles() {
     const css = `
+      #aab-reading-mark-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 2;
+        width: 0;
+        height: 0;
+        overflow: visible;
+        pointer-events: none;
+      }
+      .aab-reading-brush-mark,
+      .aab-reading-underline-mark {
+        position: absolute;
+        display: block;
+        pointer-events: none;
+        transform-origin: left center;
+      }
+      .aab-reading-brush-mark {
+        overflow: hidden;
+        background:
+          linear-gradient(
+            90deg,
+            rgba(244, 204, 72, 0.07) 0%,
+            rgba(247, 211, 91, 0.20) 3%,
+            rgba(247, 211, 91, 0.19) 91%,
+            rgba(244, 204, 72, 0.05) 100%
+          ),
+          repeating-linear-gradient(
+            0deg,
+            rgba(255, 225, 116, 0.13) 0 1px,
+            rgba(242, 201, 67, 0.045) 1px 3px,
+            rgba(255, 222, 105, 0.10) 3px 4px
+          );
+        border-radius: 13% 8% 12% 10% / 34% 28% 38% 31%;
+        filter: blur(0.12px);
+        mix-blend-mode: multiply;
+      }
+      .aab-reading-brush-mark::after {
+        position: absolute;
+        content: "";
+        inset: 18% 1.5% 14%;
+        opacity: 0.38;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent 0 2px,
+          rgba(229, 185, 47, 0.11) 2px 3px,
+          transparent 3px 5px
+        );
+      }
+      .aab-reading-brush-mark--note {
+        background:
+          linear-gradient(
+            90deg,
+            rgba(151, 111, 190, 0.04) 0%,
+            rgba(163, 122, 203, 0.13) 4%,
+            rgba(163, 122, 203, 0.12) 92%,
+            rgba(151, 111, 190, 0.035) 100%
+          ),
+          repeating-linear-gradient(
+            0deg,
+            rgba(187, 149, 220, 0.08) 0 1px,
+            rgba(137, 91, 176, 0.035) 1px 3px,
+            rgba(183, 142, 218, 0.065) 3px 4px
+          );
+      }
+      .aab-reading-brush-mark--note::after {
+        background: repeating-linear-gradient(
+          0deg,
+          transparent 0 2px,
+          rgba(126, 78, 166, 0.075) 2px 3px,
+          transparent 3px 5px
+        );
+      }
+      .aab-reading-underline-mark {
+        overflow: visible;
+        color: rgba(53, 116, 190, 0.84);
+      }
+      .aab-reading-underline-mark--note {
+        color: rgba(129, 78, 171, 0.78);
+      }
+      .aab-reading-underline-mark path {
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        vector-effect: non-scaling-stroke;
+      }
+      .aab-reading-underline-mark .primary {
+        stroke-width: 1.55px;
+      }
+      .aab-reading-underline-mark .ghost {
+        opacity: 0.28;
+        stroke-width: 0.72px;
+      }
+      body[data-md-color-scheme="slate"] .aab-reading-brush-mark {
+        background:
+          linear-gradient(
+            90deg,
+            rgba(255, 218, 93, 0.035) 0%,
+            rgba(255, 219, 99, 0.13) 4%,
+            rgba(255, 219, 99, 0.12) 92%,
+            rgba(255, 218, 93, 0.03) 100%
+          ),
+          repeating-linear-gradient(
+            0deg,
+            rgba(255, 229, 129, 0.08) 0 1px,
+            rgba(255, 207, 58, 0.025) 1px 3px,
+            rgba(255, 226, 116, 0.065) 3px 4px
+          );
+        mix-blend-mode: screen;
+      }
+      body[data-md-color-scheme="slate"] .aab-reading-brush-mark--note {
+        background:
+          linear-gradient(
+            90deg,
+            rgba(202, 161, 236, 0.025) 0%,
+            rgba(196, 153, 232, 0.095) 4%,
+            rgba(196, 153, 232, 0.085) 92%,
+            rgba(202, 161, 236, 0.02) 100%
+          ),
+          repeating-linear-gradient(
+            0deg,
+            rgba(210, 177, 238, 0.06) 0 1px,
+            rgba(172, 120, 214, 0.022) 1px 3px,
+            rgba(206, 169, 237, 0.05) 3px 4px
+          );
+      }
+      body[data-md-color-scheme="slate"] .aab-reading-underline-mark {
+        color: rgba(111, 171, 234, 0.82);
+      }
+      body[data-md-color-scheme="slate"] .aab-reading-underline-mark--note {
+        color: rgba(188, 139, 226, 0.76);
+      }
       ::highlight(${HIGHLIGHT_NAMES.highlight}) {
         color: inherit;
-        background-color: rgba(255, 210, 74, 0.48);
+        background-color: rgba(255, 215, 88, 0.18);
       }
       ::highlight(${HIGHLIGHT_NAMES.underline}) {
         color: inherit;
@@ -625,6 +817,109 @@
     }
   }
 
+  function ensureMarkLayer() {
+    if (state.brushLayer?.isConnected) return state.brushLayer;
+    const existing = document.getElementById('aab-reading-mark-layer');
+    if (existing) existing.remove();
+
+    const layer = document.createElement('div');
+    layer.id = 'aab-reading-mark-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    document.body.append(layer);
+    state.brushLayer = layer;
+    return layer;
+  }
+
+  function createBrushMark(annotation, rect, lineIndex) {
+    const variation = getBrushStrokeVariation(annotation.id, lineIndex);
+    const mark = document.createElement('span');
+    const isNote = annotation.type === 'note';
+    const heightScale = isNote ? variation.heightScale * 0.92 : variation.heightScale;
+    const verticalOffset = isNote ? variation.verticalOffset + 0.025 : variation.verticalOffset;
+
+    mark.className = `aab-reading-brush-mark${isNote ? ' aab-reading-brush-mark--note' : ''}`;
+    mark.dataset.annotationId = annotation.id;
+    mark.style.left = `${global.scrollX + rect.left - variation.leftPad}px`;
+    mark.style.top = `${global.scrollY + rect.top + rect.height * verticalOffset}px`;
+    mark.style.width = `${rect.width + variation.leftPad + variation.rightPad}px`;
+    mark.style.height = `${Math.max(7, rect.height * heightScale)}px`;
+    mark.style.clipPath = variation.clipPath;
+    mark.style.transform = `rotate(${variation.rotation}deg)`;
+    return mark;
+  }
+
+  function createUnderlineMark(annotation, rect, lineIndex) {
+    const variation = getHandUnderlineVariation(annotation.id, lineIndex);
+    const namespace = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(namespace, 'svg');
+    const primary = document.createElementNS(namespace, 'path');
+    const ghost = document.createElementNS(namespace, 'path');
+    const isNote = annotation.type === 'note';
+
+    svg.classList.add('aab-reading-underline-mark');
+    if (isNote) svg.classList.add('aab-reading-underline-mark--note');
+    svg.dataset.annotationId = annotation.id;
+    svg.setAttribute('viewBox', '0 0 100 9');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.left = `${global.scrollX + rect.left - 1}px`;
+    svg.style.top = `${global.scrollY + rect.bottom - (isNote ? 4.2 : 3.7)}px`;
+    svg.style.width = `${Math.max(6, rect.width + 2)}px`;
+    svg.style.height = '9px';
+    svg.style.transform = `rotate(${variation.rotation}deg)`;
+
+    ghost.classList.add('ghost');
+    ghost.setAttribute('d', variation.ghostPath);
+    primary.classList.add('primary');
+    primary.setAttribute('d', variation.primaryPath);
+    svg.append(ghost, primary);
+    return svg;
+  }
+
+  function renderHandDrawnMarks() {
+    const layer = ensureMarkLayer();
+    layer.replaceChildren();
+    if (!state.root) return;
+
+    const currentPageUrl = normalizePageUrl(global.location.href);
+    const brushFragment = document.createDocumentFragment();
+    const lineFragment = document.createDocumentFragment();
+
+    for (const annotation of state.store.annotations) {
+      if (annotation.pageUrl !== currentPageUrl) continue;
+      const resolved = state.resolved.get(annotation.id);
+      if (!resolved) continue;
+
+      const rects = Array.from(resolved.range.getClientRects())
+        .filter((rect) => rect.width > 0.5 && rect.height > 0.5);
+
+      rects.forEach((rect, lineIndex) => {
+        if (annotation.type === 'highlight' || annotation.type === 'note') {
+          brushFragment.append(createBrushMark(annotation, rect, lineIndex));
+        }
+        if (annotation.type === 'underline' || annotation.type === 'note') {
+          lineFragment.append(createUnderlineMark(annotation, rect, lineIndex));
+        }
+      });
+    }
+
+    layer.append(brushFragment, lineFragment);
+  }
+
+  function scheduleHandDrawnMarkRefresh() {
+    global.clearTimeout(state.brushRefreshTimer);
+    state.brushRefreshTimer = global.setTimeout(renderHandDrawnMarks, 80);
+  }
+
+  function observeArticleLayout() {
+    if (!global.ResizeObserver || state.observedRoot === state.root) return;
+    if (!state.rootResizeObserver) {
+      state.rootResizeObserver = new global.ResizeObserver(scheduleHandDrawnMarkRefresh);
+    }
+    state.rootResizeObserver.disconnect();
+    state.observedRoot = state.root;
+    if (state.root) state.rootResizeObserver.observe(state.root);
+  }
+
   function clearRegisteredHighlights() {
     if (!state.highlightsSupported) return;
     for (const name of Object.values(HIGHLIGHT_NAMES)) {
@@ -640,11 +935,6 @@
 
     const currentPageUrl = normalizePageUrl(global.location.href);
     const source = state.root.textContent || '';
-    const rangesByType = {
-      highlight: [],
-      note: [],
-      underline: [],
-    };
 
     for (const annotation of state.store.annotations) {
       if (annotation.pageUrl !== currentPageUrl) continue;
@@ -658,18 +948,10 @@
         range,
         strategy: match.strategy,
       });
-      rangesByType[annotation.type].push(range);
     }
 
-    if (state.highlightsSupported) {
-      for (const type of Object.keys(rangesByType)) {
-        global.CSS.highlights.set(
-          HIGHLIGHT_NAMES[type],
-          new global.Highlight(...rangesByType[type]),
-        );
-      }
-    }
-
+    renderHandDrawnMarks();
+    observeArticleLayout();
     renderManager();
     updateLauncherCount();
     schedulePendingScroll();
@@ -1474,7 +1756,11 @@
     global.clearTimeout(state.refreshTimer);
     state.refreshTimer = global.setTimeout(() => {
       syncUiTheme();
-      if (getArticleRoot() !== state.root) renderHighlights();
+      if (getArticleRoot() !== state.root) {
+        renderHighlights();
+      } else {
+        scheduleHandDrawnMarkRefresh();
+      }
     }, 120);
   }
 
@@ -1498,7 +1784,10 @@
       if (!event.composedPath().includes(state.ui.host)) hideToolbar();
     }, true);
     global.addEventListener('scroll', hideToolbar, true);
-    global.addEventListener('resize', hideToolbar);
+    global.addEventListener('resize', () => {
+      hideToolbar();
+      scheduleHandDrawnMarkRefresh();
+    });
     global.addEventListener('popstate', scheduleRefresh);
     global.addEventListener('pageshow', scheduleRefresh);
 
@@ -1547,10 +1836,6 @@
     installListeners();
     installMenuCommands();
     renderHighlights();
-
-    if (!state.highlightsSupported) {
-      showToast('当前浏览器不支持 CSS Highlights，请使用新版 Chrome、Edge 或 Firefox。', 'error');
-    }
   }
 
   if (document.readyState === 'loading') {

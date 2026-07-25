@@ -98,6 +98,30 @@ test('returns null when the selected quote no longer exists', () => {
   assert.equal(core.locateTextAnchor('正文已经完全重写。', anchor), null);
 });
 
+test('creates deterministic brush variations with subtle bounded jitter', () => {
+  const first = core.getBrushStrokeVariation('annotation-1', 0);
+  const repeated = core.getBrushStrokeVariation('annotation-1', 0);
+  const nextLine = core.getBrushStrokeVariation('annotation-1', 1);
+
+  assert.deepEqual(first, repeated);
+  assert.notDeepEqual(first, nextLine);
+  assert.match(first.clipPath, /^polygon\(/);
+  assert.ok(first.heightScale >= 0.58 && first.heightScale <= 0.64);
+  assert.ok(first.rotation >= -0.3 && first.rotation <= 0.3);
+});
+
+test('creates deterministic hand-drawn underline paths for each line', () => {
+  const first = core.getHandUnderlineVariation('annotation-1', 0);
+  const repeated = core.getHandUnderlineVariation('annotation-1', 0);
+  const nextLine = core.getHandUnderlineVariation('annotation-1', 1);
+
+  assert.deepEqual(first, repeated);
+  assert.notDeepEqual(first, nextLine);
+  assert.match(first.primaryPath, /^M 1 [\d.]+ C /);
+  assert.match(first.ghostPath, /^M 1 [\d.]+ C /);
+  assert.ok(first.rotation >= -0.16 && first.rotation <= 0.16);
+});
+
 test('normalizes, filters, and sorts stored annotations', () => {
   const later = annotation({
     anchor: {

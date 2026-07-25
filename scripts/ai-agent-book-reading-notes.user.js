@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.3
+// @version      0.1.4
 // @description  Highlight, underline, annotate, persist, and export notes from AI Agents in Depth.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -200,6 +200,19 @@
 
     const targetCenter = inset + (height - inset) / 2;
     return Math.max(0, currentScrollY + (top + bottom) / 2 - targetCenter);
+  }
+
+  function findTextOffsetPoint(nodes, offset, edge) {
+    const value = Math.trunc(Number(offset));
+    if (!Array.isArray(nodes) || !Number.isFinite(value)) return null;
+
+    if (edge === 'start') {
+      return nodes.find((item) => value >= item.start && value < item.end) || null;
+    }
+    if (edge === 'end') {
+      return nodes.find((item) => value > item.start && value <= item.end) || null;
+    }
+    return null;
   }
 
   function buildTextAnchor(text, start, end, contextLength = CONFIG.contextLength) {
@@ -555,6 +568,7 @@
     compareAnnotations,
     createHtmlExport,
     createMarkdownExport,
+    findTextOffsetPoint,
     getBrushStrokeVariation,
     getHandUnderlineVariation,
     groupAnnotations,
@@ -872,14 +886,15 @@
 
     while ((node = walker.nextNode())) {
       const length = node.nodeValue?.length || 0;
+      if (!length) continue;
       nodes.push({ end: total + length, node, start: total });
       total += length;
     }
 
     if (!nodes.length || end > total) return null;
 
-    const startPoint = nodes.find((item) => start >= item.start && start <= item.end);
-    const endPoint = nodes.find((item) => end >= item.start && end <= item.end);
+    const startPoint = findTextOffsetPoint(nodes, start, 'start');
+    const endPoint = findTextOffsetPoint(nodes, end, 'end');
     if (!startPoint || !endPoint) return null;
 
     try {

@@ -176,6 +176,15 @@ test('keeps centered scrolling correct when page coordinates are zoomed', () => 
   assert.equal(zoomed * 1.25, normal);
 });
 
+test('assigns a shared text boundary to the following node for range starts', () => {
+  const newline = { end: 8, node: 'article-newline', start: 7 };
+  const paragraph = { end: 24, node: 'paragraph-text', start: 8 };
+  const nodes = [newline, paragraph];
+
+  assert.equal(core.findTextOffsetPoint(nodes, 8, 'start'), paragraph);
+  assert.equal(core.findTextOffsetPoint(nodes, 8, 'end'), newline);
+});
+
 test('normalizes, filters, and sorts stored annotations', () => {
   const later = annotation({
     anchor: {

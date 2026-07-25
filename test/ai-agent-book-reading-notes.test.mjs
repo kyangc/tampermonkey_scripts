@@ -148,6 +148,34 @@ test('does not merge a tall block box with nearby visual lines', () => {
   assert.deepEqual(lines.map((line) => line.height), [20, 60, 20]);
 });
 
+test('centers an annotation range in the usable viewport', () => {
+  const target = core.calculateCenteredScrollTop(
+    { bottom: 940, top: 900 },
+    200,
+    700,
+    60,
+  );
+
+  assert.equal(target, 740);
+});
+
+test('keeps centered scrolling correct when page coordinates are zoomed', () => {
+  const normal = core.calculateCenteredScrollTop(
+    { bottom: 940, top: 900 },
+    200,
+    700,
+    60,
+  );
+  const zoomed = core.calculateCenteredScrollTop(
+    { bottom: 752, top: 720 },
+    160,
+    560,
+    48,
+  );
+
+  assert.equal(zoomed * 1.25, normal);
+});
+
 test('normalizes, filters, and sorts stored annotations', () => {
   const later = annotation({
     anchor: {

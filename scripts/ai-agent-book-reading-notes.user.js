@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.2
+// @version      0.1.3
 // @description  Highlight, underline, annotate, persist, and export notes from AI Agents in Depth.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -183,6 +183,23 @@
     }
 
     return lines.map(({ center: _center, ...rect }) => rect);
+  }
+
+  function calculateCenteredScrollTop(rect, scrollY, viewportHeight, topInset = 0) {
+    const top = Number(rect?.top);
+    const bottom = Number.isFinite(Number(rect?.bottom))
+      ? Number(rect.bottom)
+      : top + Number(rect?.height);
+    const currentScrollY = Number.isFinite(Number(scrollY)) ? Number(scrollY) : 0;
+    const height = Math.max(0, Number(viewportHeight) || 0);
+    const inset = clamp(Number(topInset) || 0, 0, height);
+
+    if (!Number.isFinite(top) || !Number.isFinite(bottom) || height <= 0) {
+      return Math.max(0, currentScrollY);
+    }
+
+    const targetCenter = inset + (height - inset) / 2;
+    return Math.max(0, currentScrollY + (top + bottom) / 2 - targetCenter);
   }
 
   function buildTextAnchor(text, start, end, contextLength = CONFIG.contextLength) {
@@ -534,6 +551,7 @@
 
   const core = Object.freeze({
     buildTextAnchor,
+    calculateCenteredScrollTop,
     compareAnnotations,
     createHtmlExport,
     createMarkdownExport,
@@ -1774,6 +1792,33 @@
     global.setTimeout(() => global.CSS.highlights.delete(HIGHLIGHT_NAMES.focus), 1500);
   }
 
+  function getViewportTopInset() {
+    const header = document.querySelector('.md-header');
+    if (!header) return 0;
+    const position = global.getComputedStyle(header).position;
+    if (position !== 'fixed' && position !== 'sticky') return 0;
+    const rect = header.getBoundingClientRect();
+    if (rect.bottom <= 0 || rect.top > 1) return 0;
+    return clamp(rect.bottom, 0, global.innerHeight * 0.35);
+  }
+
+  function scrollRangeIntoView(range) {
+    const rects = getRangeTextLineRects(range);
+    if (!rects.length) return false;
+
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const targetTop = calculateCenteredScrollTop(
+      { bottom, top },
+      global.scrollY,
+      global.innerHeight,
+      getViewportTopInset(),
+    );
+
+    global.scrollTo({ behavior: 'smooth', top: targetTop });
+    return true;
+  }
+
   function goToAnnotation(id) {
     const annotation = state.store.annotations.find((item) => item.id === id);
     if (!annotation) return;
@@ -1792,8 +1837,10 @@
     }
 
     closeDrawer();
-    const element = resolved.range.startContainer.parentElement;
-    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!scrollRangeIntoView(resolved.range)) {
+      const element = resolved.range.startContainer.parentElement;
+      element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
     flashRange(resolved.range);
   }
 

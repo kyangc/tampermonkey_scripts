@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.4
-// @description  Highlight, underline, annotate, persist, and export notes from AI Agents in Depth.
+// @version      0.2.0
+// @description  Highlight, annotate, export, and end-to-end encrypt notes across devices.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
 // @supportURL   https://github.com/kyangc/tampermonkey_scripts/issues
@@ -16,6 +16,8 @@
 // @grant        GM_addStyle
 // @grant        GM_addValueChangeListener
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @noframes
 // ==/UserScript==
 
@@ -28,7 +30,15 @@
     maxSelectionLength: 6000,
     schemaVersion: 1,
     storageKey: 'ai-agent-book:reading-notes:v1',
+    syncStorageKey: 'ai-agent-book:reading-notes-sync:v1',
     uiHostId: 'aab-reading-notes-host',
+  });
+
+  const SYNC_CONFIG = Object.freeze({
+    apiVersion: 1,
+    maxBatchSize: 100,
+    pairingPollMs: 2200,
+    schemaVersion: 1,
   });
 
   const ANNOTATION_TYPES = Object.freeze({
@@ -92,6 +102,139 @@
       hash = Math.imul(hash, 16777619);
     }
     return hash >>> 0;
+  }
+
+  function bytesToBase64Url(value) {
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
+  function base64UrlToBytes(value) {
+    const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+
+  function randomBase64Url(byteLength = 32, cryptoObject = global.crypto) {
+    const bytes = new Uint8Array(byteLength);
+    cryptoObject.getRandomValues(bytes);
+    return bytesToBase64Url(bytes);
+  }
+
+  async function sha256Base64Url(value, cryptoObject = global.crypto) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    const digest = await cryptoObject.subtle.digest('SHA-256', bytes);
+    return bytesToBase64Url(digest);
+  }
+
+  function normalizeSyncEndpoint(value) {
+    try {
+      const url = new URL(String(value || '').trim());
+      const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';
+      url.hash = '';
+      url.search = '';
+      return url.href.replace(/\/+$/, '');
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function normalizePendingMutation(value) {
+    if (!value || typeof value !== 'object') return null;
+    const mutationId = String(value.mutationId || '');
+    const recordId = String(value.recordId || '');
+    const baseVersion = Number(value.baseVersion);
+    const deleted = Boolean(value.deleted);
+    const snapshot = deleted ? null : normalizeAnnotation(value.snapshot);
+    if (
+      !mutationId
+      || !recordId
+      || !Number.isSafeInteger(baseVersion)
+      || baseVersion < 0
+      || (!deleted && !snapshot)
+    ) {
+      return null;
+    }
+    return {
+      baseVersion,
+      deleted,
+      mutationId,
+      recordId,
+      snapshot,
+    };
+  }
+
+  function normalizeSyncState(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    const versions = {};
+    for (const [recordId, version] of Object.entries(source.versions || {})) {
+      const number = Number(version);
+      if (recordId && Number.isSafeInteger(number) && number >= 0) {
+        versions[recordId] = number;
+      }
+    }
+
+    const pairing = source.pairing && typeof source.pairing === 'object'
+      ? {
+        code: String(source.pairing.code || ''),
+        deviceId: String(source.pairing.deviceId || ''),
+        deviceName: String(source.pairing.deviceName || ''),
+        deviceToken: String(source.pairing.deviceToken || ''),
+        endpoint: normalizeSyncEndpoint(source.pairing.endpoint),
+        expiresAt: String(source.pairing.expiresAt || ''),
+        pairId: String(source.pairing.pairId || ''),
+        pairSecret: String(source.pairing.pairSecret || ''),
+        privateKey: source.pairing.privateKey || null,
+        role: source.pairing.role === 'inviter' ? 'inviter' : 'joiner',
+      }
+      : null;
+
+    return {
+      cursor: Number.isSafeInteger(Number(source.cursor)) && Number(source.cursor) >= 0
+        ? Number(source.cursor)
+        : 0,
+      deviceId: String(source.deviceId || ''),
+      deviceName: String(source.deviceName || ''),
+      deviceToken: String(source.deviceToken || ''),
+      endpoint: normalizeSyncEndpoint(source.endpoint),
+      lastSyncAt: String(source.lastSyncAt || ''),
+      libraryId: String(source.libraryId || ''),
+      masterKey: String(source.masterKey || ''),
+      pairing,
+      pending: Array.isArray(source.pending)
+        ? source.pending.map(normalizePendingMutation).filter(Boolean)
+        : [],
+      schemaVersion: SYNC_CONFIG.schemaVersion,
+      versions,
+    };
+  }
+
+  function createPendingMutation(current, annotation, options = {}) {
+    const recordId = String(options.recordId || annotation?.id || '');
+    if (!recordId) return null;
+    const existing = current?.pending?.find((item) => item.recordId === recordId);
+    const knownVersion = Number(current?.versions?.[recordId]);
+    const baseVersion = existing
+      ? existing.baseVersion
+      : Number.isSafeInteger(knownVersion) && knownVersion >= 0 ? knownVersion : 0;
+    const deleted = Boolean(options.deleted);
+    const snapshot = deleted ? null : normalizeAnnotation(annotation);
+    if (!deleted && !snapshot) return null;
+
+    return {
+      baseVersion,
+      deleted,
+      mutationId: String(options.mutationId || `mut-${randomBase64Url(18)}`),
+      recordId,
+      snapshot,
+    };
   }
 
   function getBrushStrokeVariation(annotationId, lineIndex) {
@@ -335,6 +478,7 @@
         : 9999,
       pageTitle: String(value.pageTitle || '未命名章节').trim() || '未命名章节',
       pageUrl,
+      syncConflict: Boolean(value.syncConflict),
       type,
       updatedAt: String(value.updatedAt || value.createdAt || new Date(0).toISOString()),
     };
@@ -568,6 +712,9 @@
     compareAnnotations,
     createHtmlExport,
     createMarkdownExport,
+    createPendingMutation,
+    base64UrlToBytes,
+    bytesToBase64Url,
     findTextOffsetPoint,
     getBrushStrokeVariation,
     getHandUnderlineVariation,
@@ -576,7 +723,10 @@
     mergeTextLineRects,
     normalizeAnnotation,
     normalizePageUrl,
+    normalizeSyncEndpoint,
+    normalizeSyncState,
     normalizeStore,
+    sha256Base64Url,
   });
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -592,6 +742,7 @@
     filter: 'current',
     highlightsSupported: Boolean(global.CSS?.highlights && global.Highlight),
     observer: null,
+    pairingTimer: null,
     pendingSelection: null,
     refreshTimer: null,
     resolved: new Map(),
@@ -599,6 +750,11 @@
     rootResizeObserver: null,
     observedRoot: null,
     store: null,
+    sync: null,
+    syncDevices: [],
+    syncError: '',
+    syncing: false,
+    syncTimer: null,
     ui: null,
   };
 
@@ -636,6 +792,252 @@
       showToast('保存失败，请检查 Tampermonkey 存储权限。', 'error');
       return false;
     }
+  }
+
+  function readRawSyncState() {
+    try {
+      if (typeof GM_getValue === 'function') {
+        return GM_getValue(CONFIG.syncStorageKey, null);
+      }
+      const raw = global.localStorage.getItem(CONFIG.syncStorageKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function loadSyncState() {
+    return normalizeSyncState(readRawSyncState());
+  }
+
+  function persistSyncState() {
+    const value = normalizeSyncState(state.sync);
+    state.sync = value;
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(CONFIG.syncStorageKey, value);
+      } else {
+        global.localStorage.setItem(CONFIG.syncStorageKey, JSON.stringify(value));
+      }
+      renderSyncUi();
+      return true;
+    } catch (_error) {
+      showToast('同步设置保存失败。', 'error');
+      return false;
+    }
+  }
+
+  function isSyncConfigured() {
+    return Boolean(
+      state.sync?.endpoint
+      && state.sync?.libraryId
+      && state.sync?.deviceId
+      && state.sync?.deviceToken
+      && state.sync?.masterKey,
+    );
+  }
+
+  function queueAnnotationMutation(annotation, options = {}) {
+    if (!isSyncConfigured()) return;
+    const mutation = createPendingMutation(state.sync, annotation, options);
+    if (!mutation) return;
+    state.sync.pending = state.sync.pending
+      .filter((item) => item.recordId !== mutation.recordId);
+    state.sync.pending.push(mutation);
+    persistSyncState();
+    scheduleSync();
+  }
+
+  function queueAllLocalAnnotations() {
+    if (!isSyncConfigured()) return;
+    for (const annotation of state.store.annotations) {
+      if (state.sync.versions[annotation.id] !== undefined) continue;
+      queueAnnotationMutation(annotation);
+    }
+  }
+
+  async function importLibraryKey(masterKey) {
+    return global.crypto.subtle.importKey(
+      'raw',
+      base64UrlToBytes(masterKey),
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+  }
+
+  function annotationAdditionalData(libraryId, recordId, version) {
+    return new TextEncoder().encode(`${libraryId}|${recordId}|${version}`);
+  }
+
+  async function encryptAnnotationPayload(annotation, recordId, version) {
+    const key = await importLibraryKey(state.sync.masterKey);
+    const iv = global.crypto.getRandomValues(new Uint8Array(12));
+    const plaintext = new TextEncoder().encode(JSON.stringify(annotation));
+    const ciphertext = await global.crypto.subtle.encrypt({
+      additionalData: annotationAdditionalData(state.sync.libraryId, recordId, version),
+      iv,
+      name: 'AES-GCM',
+    }, key, plaintext);
+
+    return {
+      ciphertext: bytesToBase64Url(ciphertext),
+      nonce: bytesToBase64Url(iv),
+    };
+  }
+
+  async function decryptAnnotationPayload(record) {
+    if (!record || record.deleted) return null;
+    const key = await importLibraryKey(state.sync.masterKey);
+    const plaintext = await global.crypto.subtle.decrypt({
+      additionalData: annotationAdditionalData(
+        state.sync.libraryId,
+        record.recordId,
+        record.version,
+      ),
+      iv: base64UrlToBytes(record.nonce),
+      name: 'AES-GCM',
+    }, key, base64UrlToBytes(record.ciphertext));
+    const value = JSON.parse(new TextDecoder().decode(plaintext));
+    return normalizeAnnotation(value);
+  }
+
+  async function createPairingKeyPair() {
+    const keyPair = await global.crypto.subtle.generateKey({
+      name: 'ECDH',
+      namedCurve: 'P-256',
+    }, true, ['deriveKey']);
+    return {
+      privateKey: await global.crypto.subtle.exportKey('jwk', keyPair.privateKey),
+      publicKey: await global.crypto.subtle.exportKey('jwk', keyPair.publicKey),
+    };
+  }
+
+  async function encryptLibraryKeyEnvelope(publicKeyJwk, pairId) {
+    const recipientKey = await global.crypto.subtle.importKey(
+      'jwk',
+      publicKeyJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      [],
+    );
+    const ephemeral = await global.crypto.subtle.generateKey({
+      name: 'ECDH',
+      namedCurve: 'P-256',
+    }, true, ['deriveKey']);
+    const wrappingKey = await global.crypto.subtle.deriveKey({
+      name: 'ECDH',
+      public: recipientKey,
+    }, ephemeral.privateKey, {
+      length: 256,
+      name: 'AES-GCM',
+    }, false, ['encrypt']);
+    const iv = global.crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await global.crypto.subtle.encrypt({
+      additionalData: new TextEncoder().encode(pairId),
+      iv,
+      name: 'AES-GCM',
+    }, wrappingKey, base64UrlToBytes(state.sync.masterKey));
+
+    return {
+      ciphertext: bytesToBase64Url(ciphertext),
+      ephemeralPublicKey: await global.crypto.subtle.exportKey('jwk', ephemeral.publicKey),
+      iv: bytesToBase64Url(iv),
+    };
+  }
+
+  async function decryptLibraryKeyEnvelope(envelope, privateKeyJwk, pairId) {
+    const privateKey = await global.crypto.subtle.importKey(
+      'jwk',
+      privateKeyJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      ['deriveKey'],
+    );
+    const publicKey = await global.crypto.subtle.importKey(
+      'jwk',
+      envelope.ephemeralPublicKey,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      [],
+    );
+    const wrappingKey = await global.crypto.subtle.deriveKey({
+      name: 'ECDH',
+      public: publicKey,
+    }, privateKey, {
+      length: 256,
+      name: 'AES-GCM',
+    }, false, ['decrypt']);
+    const plaintext = await global.crypto.subtle.decrypt({
+      additionalData: new TextEncoder().encode(pairId),
+      iv: base64UrlToBytes(envelope.iv),
+      name: 'AES-GCM',
+    }, wrappingKey, base64UrlToBytes(envelope.ciphertext));
+    return bytesToBase64Url(plaintext);
+  }
+
+  function requestWithUserscript(options) {
+    if (typeof GM_xmlhttpRequest !== 'function') {
+      return global.fetch(options.url, {
+        body: options.data,
+        headers: options.headers,
+        method: options.method,
+      }).then(async (response) => ({
+        responseText: await response.text(),
+        status: response.status,
+      }));
+    }
+
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        anonymous: true,
+        data: options.data,
+        headers: options.headers,
+        method: options.method,
+        onabort: () => reject(new Error('请求已取消。')),
+        onerror: () => reject(new Error('无法连接同步服务。')),
+        onload: resolve,
+        ontimeout: () => reject(new Error('连接同步服务超时。')),
+        timeout: 15000,
+        url: options.url,
+      });
+    });
+  }
+
+  async function syncApi(path, options = {}) {
+    const endpoint = normalizeSyncEndpoint(options.endpoint || state.sync.endpoint);
+    if (!endpoint) throw new Error('请先填写有效的 HTTPS 同步地址。');
+    const headers = { accept: 'application/json' };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.bootstrapToken) headers['x-bootstrap-token'] = options.bootstrapToken;
+    if (options.pairSecret) headers['x-pair-secret'] = options.pairSecret;
+    if (options.auth !== false) {
+      headers.authorization = `Bearer ${state.sync.deviceToken}`;
+      headers['x-device-id'] = state.sync.deviceId;
+      headers['x-library-id'] = state.sync.libraryId;
+    }
+
+    const response = await requestWithUserscript({
+      data: options.body === undefined ? undefined : JSON.stringify(options.body),
+      headers,
+      method: options.method || (options.body === undefined ? 'GET' : 'POST'),
+      url: `${endpoint}${path}`,
+    });
+
+    let payload;
+    try {
+      payload = response.responseText ? JSON.parse(response.responseText) : {};
+    } catch (_error) {
+      throw new Error(`同步服务返回了无法解析的响应（HTTP ${response.status}）。`);
+    }
+    if (response.status < 200 || response.status >= 300) {
+      const error = new Error(payload?.error?.message || `同步失败（HTTP ${response.status}）。`);
+      error.code = payload?.error?.code || 'sync_error';
+      error.status = response.status;
+      error.details = payload?.error?.details;
+      throw error;
+    }
+    return payload;
   }
 
   function installGlobalStyles() {
@@ -1116,6 +1518,7 @@
 
     state.store.annotations.push(annotation);
     if (!persistStore()) return;
+    queueAnnotationMutation(annotation);
 
     global.getSelection()?.removeAllRanges();
     state.pendingSelection = null;
@@ -1132,6 +1535,7 @@
 
     state.store.annotations = state.store.annotations.filter((item) => item.id !== id);
     if (!persistStore()) return;
+    queueAnnotationMutation(null, { deleted: true, recordId: id });
     renderHighlights();
     showToast('记录已删除。');
   }
@@ -1143,9 +1547,457 @@
     annotation.note = String(note || '').trim();
     annotation.updatedAt = new Date().toISOString();
     if (!persistStore()) return;
+    queueAnnotationMutation(annotation);
     closeComposer();
     renderManager();
     showToast('批注已更新。', 'success');
+  }
+
+  function replaceLocalAnnotation(annotation) {
+    const index = state.store.annotations.findIndex((item) => item.id === annotation.id);
+    if (index === -1) state.store.annotations.push(annotation);
+    else state.store.annotations[index] = annotation;
+  }
+
+  async function applyRemoteRecord(record) {
+    if (!record?.recordId || !Number.isSafeInteger(Number(record.version))) return;
+    state.sync.versions[record.recordId] = Number(record.version);
+    if (record.deleted) {
+      state.store.annotations = state.store.annotations
+        .filter((annotation) => annotation.id !== record.recordId);
+      return;
+    }
+
+    const annotation = await decryptAnnotationPayload(record);
+    if (!annotation || annotation.id !== record.recordId) {
+      throw new Error('远端笔记记录与加密内容不一致。');
+    }
+    replaceLocalAnnotation(annotation);
+  }
+
+  async function resolveSyncConflict(pending, current) {
+    state.sync.pending = state.sync.pending
+      .filter((item) => item.mutationId !== pending.mutationId);
+
+    if (!current) {
+      const retry = {
+        ...pending,
+        baseVersion: 0,
+        mutationId: `mut-${randomBase64Url(18)}`,
+      };
+      state.sync.pending.push(retry);
+      return;
+    }
+
+    await applyRemoteRecord(current);
+    if (pending.deleted || !pending.snapshot) return;
+
+    const conflictCopy = normalizeAnnotation({
+      ...pending.snapshot,
+      id: createAnnotationId(),
+      syncConflict: true,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!conflictCopy) return;
+    state.store.annotations.push(conflictCopy);
+    const conflictMutation = createPendingMutation(state.sync, conflictCopy);
+    if (conflictMutation) state.sync.pending.push(conflictMutation);
+  }
+
+  async function buildEncryptedMutation(pending) {
+    if (pending.deleted) {
+      return {
+        baseVersion: pending.baseVersion,
+        deleted: true,
+        mutationId: pending.mutationId,
+        recordId: pending.recordId,
+      };
+    }
+
+    const encrypted = await encryptAnnotationPayload(
+      pending.snapshot,
+      pending.recordId,
+      pending.baseVersion + 1,
+    );
+    return {
+      ...encrypted,
+      baseVersion: pending.baseVersion,
+      deleted: false,
+      mutationId: pending.mutationId,
+      recordId: pending.recordId,
+    };
+  }
+
+  async function processSyncResponse(response) {
+    for (const accepted of response.accepted || []) {
+      const current = state.sync.pending
+        .find((item) => item.recordId === accepted.recordId);
+      if (current?.mutationId === accepted.mutationId) {
+        state.sync.pending = state.sync.pending
+          .filter((item) => item.mutationId !== accepted.mutationId);
+      } else if (current) {
+        current.baseVersion = Math.max(current.baseVersion, Number(accepted.version) || 0);
+      }
+      state.sync.versions[accepted.recordId] = Number(accepted.version) || 0;
+    }
+
+    for (const conflict of response.conflicts || []) {
+      const pending = state.sync.pending
+        .find((item) => item.mutationId === conflict.mutationId);
+      if (pending) await resolveSyncConflict(pending, conflict.current);
+    }
+
+    for (const change of response.changes || []) {
+      const pending = state.sync.pending
+        .find((item) => item.recordId === change.recordId);
+      if (pending && Number(change.version) <= pending.baseVersion) continue;
+      if (pending) {
+        await resolveSyncConflict(pending, change);
+      } else {
+        await applyRemoteRecord(change);
+      }
+    }
+
+    state.sync.cursor = Number(response.cursor) || state.sync.cursor;
+    state.sync.lastSyncAt = new Date().toISOString();
+  }
+
+  async function syncNow(options = {}) {
+    if (!isSyncConfigured() || state.syncing) return false;
+    state.syncing = true;
+    state.syncError = '';
+    renderSyncUi();
+
+    try {
+      let rounds = 0;
+      let hasMore = true;
+      while (hasMore && rounds < 30) {
+        rounds += 1;
+        const batch = state.sync.pending.slice(0, SYNC_CONFIG.maxBatchSize);
+        const mutations = [];
+        for (const pending of batch) {
+          mutations.push(await buildEncryptedMutation(pending));
+        }
+        const response = await syncApi('/v1/sync', {
+          body: {
+            mutations,
+            since: state.sync.cursor,
+          },
+        });
+        await processSyncResponse(response);
+        hasMore = Boolean(response.hasMore || state.sync.pending.length);
+
+        if (!response.hasMore && !batch.length && !response.changes?.length) break;
+      }
+
+      state.store.annotations.sort(compareAnnotations);
+      persistStore();
+      persistSyncState();
+      renderHighlights();
+      if (!options.silent) showToast('读书笔记已同步。', 'success');
+      return true;
+    } catch (error) {
+      state.syncError = error.message || '同步失败。';
+      renderSyncUi();
+      if (!options.silent) showToast(state.syncError, 'error');
+      return false;
+    } finally {
+      state.syncing = false;
+      renderSyncUi();
+    }
+  }
+
+  function scheduleSync(delay = 900) {
+    if (!isSyncConfigured()) return;
+    global.clearTimeout(state.syncTimer);
+    state.syncTimer = global.setTimeout(() => syncNow({ silent: true }), delay);
+  }
+
+  function syncFormValues() {
+    return {
+      deviceName: String(state.ui?.syncDeviceName?.value || '').trim().slice(0, 80),
+      endpoint: normalizeSyncEndpoint(state.ui?.syncEndpoint?.value),
+    };
+  }
+
+  function createDeviceIdentity(deviceName) {
+    return {
+      deviceId: `dev_${randomBase64Url(18)}`,
+      deviceName,
+      deviceToken: randomBase64Url(32),
+    };
+  }
+
+  async function bootstrapSync() {
+    const { deviceName, endpoint } = syncFormValues();
+    if (!endpoint || !deviceName) {
+      showToast('请先填写同步地址和设备名称。', 'error');
+      return;
+    }
+    const bootstrapToken = String(state.ui?.syncSecret?.value || '').trim();
+    if (!bootstrapToken) {
+      showToast('请在“初始化密钥 / 配对码”中填写 BOOTSTRAP_TOKEN。', 'error');
+      state.ui?.syncSecret?.focus();
+      return;
+    }
+    state.ui.syncSecret.value = '';
+
+    const identity = createDeviceIdentity(deviceName);
+    const libraryId = `lib_${randomBase64Url(18)}`;
+    const masterKey = randomBase64Url(32);
+
+    try {
+      await syncApi('/v1/bootstrap', {
+        auth: false,
+        body: {
+          deviceId: identity.deviceId,
+          deviceName,
+          libraryId,
+          tokenHash: await sha256Base64Url(identity.deviceToken),
+        },
+        bootstrapToken,
+        endpoint,
+      });
+      state.sync = normalizeSyncState({
+        ...identity,
+        endpoint,
+        libraryId,
+        masterKey,
+      });
+      persistSyncState();
+      queueAllLocalAnnotations();
+      renderSyncUi();
+      await syncNow();
+      loadSyncDevices();
+    } catch (error) {
+      showToast(error.message || '初始化同步失败。', 'error');
+    }
+  }
+
+  async function createPairingInvitation() {
+    if (!isSyncConfigured()) {
+      showToast('请先在这台设备上初始化或加入笔记库。', 'error');
+      return;
+    }
+    try {
+      const response = await syncApi('/v1/pair/invite', { body: {} });
+      state.sync.pairing = {
+        code: response.code,
+        deviceId: '',
+        deviceName: '',
+        deviceToken: '',
+        endpoint: state.sync.endpoint,
+        expiresAt: response.expiresAt,
+        pairId: response.pairId,
+        pairSecret: '',
+        privateKey: null,
+        role: 'inviter',
+      };
+      persistSyncState();
+      showToast(`配对码：${response.code}`, 'success');
+      schedulePairingPoll(500);
+    } catch (error) {
+      showToast(error.message || '无法创建配对码。', 'error');
+    }
+  }
+
+  async function joinExistingLibrary() {
+    const { deviceName, endpoint } = syncFormValues();
+    if (!endpoint || !deviceName) {
+      showToast('请先填写同步地址和设备名称。', 'error');
+      return;
+    }
+    const code = String(state.ui?.syncSecret?.value || '')
+      .trim()
+      .toUpperCase();
+    if (!code) {
+      showToast('请在“初始化密钥 / 配对码”中填写可信设备显示的配对码。', 'error');
+      state.ui?.syncSecret?.focus();
+      return;
+    }
+    state.ui.syncSecret.value = '';
+
+    try {
+      const identity = createDeviceIdentity(deviceName);
+      const pairSecret = randomBase64Url(32);
+      const keyPair = await createPairingKeyPair();
+      const response = await syncApi('/v1/pair/claim', {
+        auth: false,
+        body: {
+          code,
+          deviceId: identity.deviceId,
+          deviceName,
+          pairSecretHash: await sha256Base64Url(pairSecret),
+          publicKey: keyPair.publicKey,
+          tokenHash: await sha256Base64Url(identity.deviceToken),
+        },
+        endpoint,
+      });
+      state.sync = normalizeSyncState({
+        deviceName,
+        endpoint,
+        pairing: {
+          code,
+          ...identity,
+          endpoint,
+          pairId: response.pairId,
+          pairSecret,
+          privateKey: keyPair.privateKey,
+          role: 'joiner',
+        },
+      });
+      persistSyncState();
+      showToast('已提交申请，请在可信设备上确认。', 'success');
+      schedulePairingPoll(500);
+    } catch (error) {
+      showToast(error.message || '加入笔记库失败。', 'error');
+    }
+  }
+
+  async function pollInviterPairing(pairing) {
+    const response = await syncApi(
+      `/v1/pair/request?pairId=${encodeURIComponent(pairing.pairId)}`,
+    );
+    if (response.status === 'invited') return false;
+    if (response.status !== 'claimed' || !response.publicKey) return true;
+
+    const approved = global.confirm(
+      `允许“${response.deviceName || '新设备'}”加入你的读书笔记吗？`,
+    );
+    if (!approved) {
+      state.sync.pairing = null;
+      persistSyncState();
+      showToast('已拒绝该设备；如需重试请生成新的配对码。');
+      return true;
+    }
+
+    const keyEnvelope = await encryptLibraryKeyEnvelope(
+      response.publicKey,
+      response.pairId,
+    );
+    await syncApi('/v1/pair/approve', {
+      body: {
+        keyEnvelope,
+        pairId: response.pairId,
+      },
+    });
+    state.sync.pairing = null;
+    persistSyncState();
+    showToast(`${response.deviceName || '新设备'}已获准加入。`, 'success');
+    loadSyncDevices();
+    return true;
+  }
+
+  async function pollJoiningPairing(pairing) {
+    const response = await syncApi(
+      `/v1/pair/status?pairId=${encodeURIComponent(pairing.pairId)}`,
+      {
+        auth: false,
+        endpoint: pairing.endpoint,
+        pairSecret: pairing.pairSecret,
+      },
+    );
+    if (response.status === 'claimed') return false;
+    if (response.status !== 'approved' || !response.keyEnvelope) {
+      if (response.status === 'expired') {
+        state.sync.pairing = null;
+        persistSyncState();
+        showToast('配对码已过期，请重新申请。', 'error');
+      }
+      return true;
+    }
+
+    const masterKey = await decryptLibraryKeyEnvelope(
+      response.keyEnvelope,
+      pairing.privateKey,
+      pairing.pairId,
+    );
+    state.sync = normalizeSyncState({
+      cursor: 0,
+      deviceId: pairing.deviceId,
+      deviceName: pairing.deviceName,
+      deviceToken: pairing.deviceToken,
+      endpoint: pairing.endpoint,
+      libraryId: response.libraryId,
+      masterKey,
+    });
+    persistSyncState();
+    queueAllLocalAnnotations();
+    showToast('新设备配对成功，正在下载笔记。', 'success');
+    await syncNow({ silent: true });
+    loadSyncDevices();
+    return true;
+  }
+
+  async function pollPairing() {
+    global.clearTimeout(state.pairingTimer);
+    const pairing = state.sync?.pairing;
+    if (!pairing?.pairId) return;
+    const expiresAt = Date.parse(pairing.expiresAt);
+    if (
+      Number.isFinite(expiresAt)
+      && expiresAt <= Date.now()
+      && pairing.role === 'inviter'
+    ) {
+      state.sync.pairing = null;
+      persistSyncState();
+      showToast('配对码已过期，请重新生成。', 'error');
+      return;
+    }
+    try {
+      const finished = pairing.role === 'inviter'
+        ? await pollInviterPairing(pairing)
+        : await pollJoiningPairing(pairing);
+      state.syncError = '';
+      renderSyncUi();
+      if (!finished) schedulePairingPoll();
+    } catch (error) {
+      state.syncError = error.message || '检查配对状态失败。';
+      renderSyncUi();
+      schedulePairingPoll(5000);
+    }
+  }
+
+  function schedulePairingPoll(delay = SYNC_CONFIG.pairingPollMs) {
+    global.clearTimeout(state.pairingTimer);
+    if (!state.sync?.pairing) return;
+    state.pairingTimer = global.setTimeout(pollPairing, delay);
+  }
+
+  async function loadSyncDevices() {
+    if (!isSyncConfigured()) return;
+    try {
+      const response = await syncApi('/v1/devices');
+      state.syncDevices = response.devices || [];
+      renderSyncUi();
+    } catch (error) {
+      state.syncError = error.message || '无法读取设备列表。';
+      renderSyncUi();
+    }
+  }
+
+  async function revokeSyncDevice(deviceId) {
+    const device = state.syncDevices.find((item) => item.deviceId === deviceId);
+    if (!device || device.current || device.revokedAt) return;
+    if (!global.confirm(`撤销“${device.deviceName}”的同步权限？`)) return;
+    try {
+      await syncApi('/v1/devices/revoke', { body: { deviceId } });
+      showToast('设备权限已撤销。', 'success');
+      await loadSyncDevices();
+    } catch (error) {
+      showToast(error.message || '撤销设备失败。', 'error');
+    }
+  }
+
+  function disconnectSyncDevice() {
+    if (!global.confirm('断开本机同步？本地笔记不会删除，但需要重新配对才能继续同步。')) return;
+    global.clearTimeout(state.syncTimer);
+    global.clearTimeout(state.pairingTimer);
+    state.sync = normalizeSyncState({});
+    state.syncDevices = [];
+    state.syncError = '';
+    persistSyncState();
+    renderSyncUi();
   }
 
   function syncUiTheme() {
@@ -1193,7 +2045,7 @@
           --text: #ebe6db;
         }
         *, *::before, *::after { box-sizing: border-box; }
-        button, textarea { font: inherit; }
+        button, input, textarea { font: inherit; }
         button { color: inherit; }
         [hidden] { display: none !important; }
         #toolbar {
@@ -1281,8 +2133,8 @@
           right: 0;
           bottom: 0;
           z-index: 2147483645;
-          display: grid;
-          grid-template-rows: auto auto minmax(0, 1fr) auto;
+          display: flex;
+          flex-direction: column;
           width: min(420px, 94vw);
           color: var(--text);
           background: var(--panel);
@@ -1335,7 +2187,102 @@
           border-color: color-mix(in srgb, var(--accent) 24%, transparent);
           font-weight: 650;
         }
+        .sync-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          min-height: 38px;
+          padding: 7px 20px;
+          color: var(--muted);
+          border-bottom: 1px solid var(--border);
+          font-size: 12px;
+        }
+        .sync-bar button {
+          padding: 3px 8px;
+          color: var(--accent);
+          background: transparent;
+          border: 0;
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        #sync-panel {
+          max-height: min(410px, 54vh);
+          overflow: auto;
+          padding: 14px 20px 16px;
+          background: var(--panel-2);
+          border-bottom: 1px solid var(--border);
+        }
+        #sync-panel label {
+          display: grid;
+          gap: 4px;
+          margin-bottom: 10px;
+          color: var(--muted);
+          font-size: 12px;
+        }
+        #sync-panel input {
+          width: 100%;
+          min-height: 34px;
+          padding: 6px 8px;
+          color: var(--text);
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 7px;
+          outline: none;
+        }
+        #sync-panel input:focus { border-color: var(--accent); }
+        .sync-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 7px;
+          margin-top: 12px;
+        }
+        .sync-actions button,
+        .device-row button {
+          min-height: 32px;
+          padding: 5px 9px;
+          color: var(--text);
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 7px;
+          cursor: pointer;
+        }
+        .sync-actions button:hover,
+        .device-row button:hover { border-color: var(--accent); }
+        .pairing-card {
+          margin-top: 12px;
+          padding: 10px;
+          background: var(--panel);
+          border: 1px dashed var(--accent);
+          border-radius: 8px;
+        }
+        .pairing-code {
+          display: block;
+          margin: 4px 0;
+          color: var(--accent);
+          font-size: 20px;
+          font-weight: 750;
+          letter-spacing: 0.12em;
+          user-select: all;
+        }
+        .pairing-card p,
+        .sync-help { margin: 4px 0; color: var(--muted); font-size: 12px; }
+        #device-list { margin-top: 12px; }
+        .device-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 0;
+          border-top: 1px solid var(--border);
+        }
+        .device-row strong,
+        .device-row small { display: block; }
+        .device-row small { color: var(--muted); }
+        .device-row button { min-height: 28px; color: var(--danger); font-size: 12px; }
         #list {
+          flex: 1 1 auto;
+          min-height: 0;
           overflow: auto;
           padding: 14px 16px 28px;
         }
@@ -1413,7 +2360,7 @@
         .annotation-actions .danger:hover { color: var(--danger); }
         .drawer-footer {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(3, 1fr);
           gap: 8px;
           padding: 14px 16px 18px;
           background: var(--panel);
@@ -1548,10 +2495,41 @@
           <button type="button" data-filter="current" class="active">本页</button>
           <button type="button" data-filter="all">全书</button>
         </nav>
+        <div class="sync-bar">
+          <span id="sync-status">仅保存在本机</span>
+          <button type="button" data-action="sync-now">立即同步</button>
+        </div>
+        <section id="sync-panel" hidden>
+          <label>
+            同步服务地址
+            <input id="sync-endpoint" type="url" inputmode="url"
+              placeholder="https://reading-notes-sync.example.workers.dev">
+          </label>
+          <label>
+            本机名称
+            <input id="sync-device-name" maxlength="80" placeholder="例如：家里的 MacBook">
+          </label>
+          <label>
+            初始化密钥 / 配对码
+            <input id="sync-secret" type="password" autocomplete="off"
+              placeholder="只在本次操作中使用，不会保存">
+          </label>
+          <p class="sync-help">笔记正文会先在本机使用 AES-GCM 加密，再发送到 Cloudflare。</p>
+          <div class="sync-actions">
+            <button type="button" data-action="sync-bootstrap">初始化笔记库</button>
+            <button type="button" data-action="sync-invite">生成新设备配对码</button>
+            <button type="button" data-action="sync-join">加入已有笔记库</button>
+            <button type="button" data-action="sync-refresh-devices">刷新设备</button>
+            <button type="button" data-action="sync-disconnect">断开本机</button>
+          </div>
+          <div id="pairing-info"></div>
+          <div id="device-list"></div>
+        </section>
         <div id="list"></div>
         <footer class="drawer-footer">
           <button type="button" data-action="export-markdown">导出 Markdown</button>
           <button type="button" data-action="export-html">导出网页</button>
+          <button type="button" data-action="toggle-sync-panel">同步设置</button>
         </footer>
       </aside>
       <div id="modal-layer" hidden>
@@ -1581,6 +2559,13 @@
       noteInput: shadow.getElementById('note-input'),
       shadow,
       summary: shadow.getElementById('summary'),
+      syncDeviceName: shadow.getElementById('sync-device-name'),
+      syncEndpoint: shadow.getElementById('sync-endpoint'),
+      syncPanel: shadow.getElementById('sync-panel'),
+      syncSecret: shadow.getElementById('sync-secret'),
+      syncStatus: shadow.getElementById('sync-status'),
+      pairingInfo: shadow.getElementById('pairing-info'),
+      deviceList: shadow.getElementById('device-list'),
       toast: shadow.getElementById('toast'),
       toolbar: shadow.getElementById('toolbar'),
     };
@@ -1614,10 +2599,86 @@
     state.ui.summary.textContent = `本页 ${currentPageAnnotations().length} 条 · 全书 ${state.store.annotations.length} 条`;
   }
 
+  function renderSyncUi() {
+    if (!state.ui?.syncStatus) return;
+    const configured = isSyncConfigured();
+    const pendingCount = state.sync?.pending?.length || 0;
+    let status = '仅保存在本机';
+    if (state.syncing) status = '正在同步…';
+    else if (state.syncError) status = `同步异常：${state.syncError}`;
+    else if (state.sync?.pairing?.role === 'joiner') status = '等待可信设备批准';
+    else if (state.sync?.pairing?.role === 'inviter') status = '等待新设备认领';
+    else if (configured && pendingCount) status = `待同步 ${pendingCount} 条`;
+    else if (configured && state.sync.lastSyncAt) {
+      status = `已同步 · ${formatReadableDate(state.sync.lastSyncAt)}`;
+    } else if (configured) status = '同步已启用';
+    state.ui.syncStatus.textContent = status;
+    state.ui.syncStatus.title = state.syncError || status;
+
+    if (state.ui.shadow.activeElement !== state.ui.syncEndpoint) {
+      state.ui.syncEndpoint.value = state.sync.endpoint
+        || state.sync.pairing?.endpoint
+        || state.ui.syncEndpoint.value;
+    }
+    if (state.ui.shadow.activeElement !== state.ui.syncDeviceName) {
+      state.ui.syncDeviceName.value = state.sync.deviceName
+        || state.sync.pairing?.deviceName
+        || state.ui.syncDeviceName.value
+        || `${navigator.platform || '浏览器'}设备`;
+    }
+
+    for (const action of ['sync-invite', 'sync-refresh-devices', 'sync-disconnect']) {
+      const button = state.ui.shadow.querySelector(`[data-action="${action}"]`);
+      if (button) button.hidden = !configured;
+    }
+    for (const action of ['sync-bootstrap', 'sync-join']) {
+      const button = state.ui.shadow.querySelector(`[data-action="${action}"]`);
+      if (button) button.hidden = configured;
+    }
+
+    const pairing = state.sync?.pairing;
+    if (!pairing) {
+      state.ui.pairingInfo.innerHTML = '';
+    } else if (pairing.role === 'inviter') {
+      state.ui.pairingInfo.innerHTML = `
+        <div class="pairing-card">
+          <p>请在新设备的同步设置中输入：</p>
+          <strong class="pairing-code">${escapeHtml(pairing.code)}</strong>
+          <p>有效期至 ${escapeHtml(formatReadableDate(pairing.expiresAt))}，本页会自动等待认领。</p>
+        </div>`;
+    } else {
+      state.ui.pairingInfo.innerHTML = `
+        <div class="pairing-card">
+          <p>已认领配对码 <strong>${escapeHtml(pairing.code)}</strong></p>
+          <p>请回到可信设备确认“${escapeHtml(pairing.deviceName)}”。</p>
+        </div>`;
+    }
+
+    state.ui.deviceList.innerHTML = state.syncDevices.length
+      ? state.syncDevices.map((device) => {
+        const stateText = device.revokedAt
+          ? `已撤销 · ${formatReadableDate(device.revokedAt)}`
+          : device.current ? '当前设备' : `最近同步 ${formatReadableDate(device.lastSeenAt)}`;
+        const action = !device.current && !device.revokedAt
+          ? `<button type="button" data-action="sync-revoke-device" data-id="${escapeHtml(device.deviceId)}">撤销</button>`
+          : '';
+        return `
+          <div class="device-row">
+            <div>
+              <strong>${escapeHtml(device.deviceName)}</strong>
+              <small>${escapeHtml(stateText)}</small>
+            </div>
+            ${action}
+          </div>`;
+      }).join('')
+      : '';
+  }
+
   function renderManager() {
     if (!state.ui) return;
     syncUiTheme();
     updateLauncherCount();
+    renderSyncUi();
 
     for (const button of state.ui.shadow.querySelectorAll('[data-filter]')) {
       button.classList.toggle('active', button.dataset.filter === state.filter);
@@ -1642,6 +2703,9 @@
       const note = annotation.note
         ? `<p class="annotation-note">${escapeHtml(annotation.note)}</p>`
         : '';
+      const conflict = annotation.syncConflict
+        ? '<p class="annotation-status">这是一份并发修改产生的冲突副本，请确认后保留或删除。</p>'
+        : '';
       const edit = annotation.type === 'note'
         ? `<button type="button" data-action="edit-note" data-id="${escapeHtml(annotation.id)}">编辑</button>`
         : '';
@@ -1654,6 +2718,7 @@
           </header>
           <p class="annotation-quote" data-action="goto-annotation" data-id="${escapeHtml(annotation.id)}">${escapeHtml(annotation.anchor.exact)}</p>
           ${note}
+          ${conflict}
           ${isResolved ? '' : '<p class="annotation-status">原文已变化，暂时无法定位；导出不受影响。</p>'}
           <div class="annotation-actions">
             ${edit}
@@ -1799,6 +2864,25 @@
     if (action === 'goto-annotation') goToAnnotation(id);
     if (action === 'export-markdown') exportNotes('markdown');
     if (action === 'export-html') exportNotes('html');
+    if (action === 'toggle-sync-panel') {
+      state.ui.syncPanel.hidden = !state.ui.syncPanel.hidden;
+      renderSyncUi();
+      if (!state.ui.syncPanel.hidden && isSyncConfigured()) loadSyncDevices();
+    }
+    if (action === 'sync-now') {
+      if (isSyncConfigured()) syncNow();
+      else {
+        state.ui.syncPanel.hidden = false;
+        renderSyncUi();
+        showToast('请先初始化或加入一个同步笔记库。');
+      }
+    }
+    if (action === 'sync-bootstrap') bootstrapSync();
+    if (action === 'sync-invite') createPairingInvitation();
+    if (action === 'sync-join') joinExistingLibrary();
+    if (action === 'sync-refresh-devices') loadSyncDevices();
+    if (action === 'sync-disconnect') disconnectSyncDevice();
+    if (action === 'sync-revoke-device') revokeSyncDevice(id);
   }
 
   function flashRange(range) {
@@ -1942,6 +3026,10 @@
     });
     global.addEventListener('popstate', scheduleRefresh);
     global.addEventListener('pageshow', scheduleRefresh);
+    global.addEventListener('online', () => scheduleSync(250));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') scheduleSync(350);
+    });
 
     state.observer = new MutationObserver((mutations) => {
       const pageChanged = mutations.some((mutation) => (
@@ -1971,6 +3059,12 @@
         state.store = normalizeStore(newValue);
         renderHighlights();
       });
+      GM_addValueChangeListener(CONFIG.syncStorageKey, (_name, _oldValue, newValue, remote) => {
+        if (!remote) return;
+        state.sync = normalizeSyncState(newValue);
+        renderSyncUi();
+        scheduleSync(300);
+      });
     }
   }
 
@@ -1979,15 +3073,19 @@
     GM_registerMenuCommand('打开读书笔记', () => openDrawer('all'));
     GM_registerMenuCommand('导出 Markdown 笔记', () => exportNotes('markdown'));
     GM_registerMenuCommand('导出 HTML 笔记', () => exportNotes('html'));
+    GM_registerMenuCommand('立即同步读书笔记', () => syncNow());
   }
 
   function init() {
     state.store = loadStore();
+    state.sync = loadSyncState();
     installGlobalStyles();
     mountUi();
     installListeners();
     installMenuCommands();
     renderHighlights();
+    if (state.sync.pairing) schedulePairingPoll(500);
+    if (isSyncConfigured()) scheduleSync(700);
   }
 
   if (document.readyState === 'loading') {

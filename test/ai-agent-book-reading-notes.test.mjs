@@ -271,3 +271,64 @@ test('escapes user text in HTML exports while keeping notes readable', () => {
   assert.match(output, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(output, /&lt;b&gt;我的观点&lt;\/b&gt;/);
 });
+
+test('accepts HTTPS sync endpoints and local HTTP development only', () => {
+  assert.equal(
+    core.normalizeSyncEndpoint('https://notes.example.com/api/?debug=1#top'),
+    'https://notes.example.com/api',
+  );
+  assert.equal(
+    core.normalizeSyncEndpoint('http://localhost:8787/'),
+    'http://localhost:8787',
+  );
+  assert.equal(core.normalizeSyncEndpoint('http://notes.example.com'), '');
+});
+
+test('keeps a pending annotation on its known server base version', () => {
+  const sync = core.normalizeSyncState({
+    versions: {
+      'annotation-1': 7,
+    },
+  });
+  const first = core.createPendingMutation(sync, annotation(), {
+    mutationId: 'mutation-1',
+  });
+  sync.pending.push(first);
+  const updated = core.createPendingMutation(sync, annotation({
+    note: '刚刚补充的观点',
+    type: 'note',
+  }), {
+    mutationId: 'mutation-2',
+  });
+
+  assert.equal(first.baseVersion, 7);
+  assert.equal(updated.baseVersion, 7);
+  assert.equal(updated.snapshot.note, '刚刚补充的观点');
+});
+
+test('normalizes sync state without retaining malformed pending mutations', () => {
+  const sync = core.normalizeSyncState({
+    cursor: 9,
+    endpoint: 'https://notes.example.com/',
+    pending: [
+      {
+        baseVersion: 2,
+        deleted: true,
+        mutationId: 'mutation-delete',
+        recordId: 'annotation-1',
+      },
+      {
+        invalid: true,
+      },
+    ],
+    versions: {
+      'annotation-1': 2,
+      invalid: -1,
+    },
+  });
+
+  assert.equal(sync.endpoint, 'https://notes.example.com');
+  assert.equal(sync.pending.length, 1);
+  assert.equal(sync.pending[0].deleted, true);
+  assert.deepEqual(sync.versions, { 'annotation-1': 2 });
+});

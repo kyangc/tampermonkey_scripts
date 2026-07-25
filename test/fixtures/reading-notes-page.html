@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>读书笔记脚本测试页</title>
+  <style>
+    body {
+      margin: 0;
+      color: #332f2a;
+      background: #f7f2e9;
+      font: 18px/1.85 "Songti SC", serif;
+    }
+    .md-header {
+      position: sticky;
+      top: 0;
+      padding: 12px 24px;
+      background: #fffaf1;
+      border-bottom: 1px solid #ddd3c4;
+    }
+    .md-content__inner {
+      width: min(760px, calc(100% - 40px));
+      margin: 48px auto 120px;
+    }
+  </style>
+</head>
+<body>
+  <header class="md-header">AI Agents in Depth</header>
+  <main>
+    <article class="md-content__inner md-typeset">
+      <h1>引言</h1>
+      <p>Agent 的设计需要从感觉驱动变成原则驱动，每一个架构决策背后都有明确的取舍。</p>
+      <p>上下文决定智能体能够看到什么，工具决定智能体能够做什么，而模型负责思考和决策。</p>
+      <p>好的设计原则应该能够穿越模型的迭代周期，并在复杂、长流程的真实任务中保持可靠。</p>
+    </article>
+  </main>
+  <script src="../../scripts/ai-agent-book-reading-notes.user.js"></script>
+</body>
+</html>

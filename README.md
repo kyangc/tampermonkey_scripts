@@ -15,12 +15,16 @@
 - 选中正文后通过浮动工具栏添加淡色画笔高亮、手绘划线或带观点的手工批注。
 - 使用文本位置、原文引用和前后文三重锚点，刷新或重新打开章节后自动恢复标记。
 - 在右下角的读书笔记面板中按本页或全书查看、定位、编辑和删除记录。
-- 所有数据只保存在 Tampermonkey 的本地脚本存储中，不上传正文或笔记。
+- 默认只保存在 Tampermonkey 本地；也可连接自建的 Cloudflare Worker + D1，在不同设备间增量同步。
+- 云同步采用设备独立凭证和 AES-GCM 端到端加密；Worker 与 D1 只接触密文。
+- 新设备必须通过可信设备生成的五分钟一次性配对码加入，可在同步设置中单独撤销。
 - 可按全书章节顺序导出为 Markdown 或独立 HTML 网页。
 
 适用页面：
 
 - `https://bojieli.github.io/ai-agent-book/book/*`
+
+云同步后端位于 [`services/reading-notes-sync`](services/reading-notes-sync)，部署步骤和安全边界见其中的 [README](services/reading-notes-sync/README.md)。未配置同步服务时，脚本不会发出任何笔记网络请求。
 
 ### X 推文分享卡片
 

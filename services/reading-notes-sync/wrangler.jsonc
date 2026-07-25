@@ -3,6 +3,8 @@
   "name": "reading-notes-sync",
   "main": "src/index.mjs",
   "compatibility_date": "2026-07-25",
+  "workers_dev": true,
+  "preview_urls": false,
   "observability": {
     "enabled": true
   },
@@ -10,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "reading-notes-sync",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "a59eda25-bae5-4818-9a9d-20ac8aebfa3f",
       "migrations_dir": "migrations"
     }
   ]

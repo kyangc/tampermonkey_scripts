@@ -26,6 +26,12 @@
 
 云同步后端位于 [`services/reading-notes-sync`](services/reading-notes-sync)，部署步骤和安全边界见其中的 [README](services/reading-notes-sync/README.md)。未配置同步服务时，脚本不会发出任何笔记网络请求。
 
+当前个人同步服务地址：
+
+```text
+https://reading-notes-sync.1109.workers.dev
+```
+
 ### X 推文分享卡片
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js)

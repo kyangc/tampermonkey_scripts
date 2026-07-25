@@ -7,13 +7,29 @@ committed to this repository.
 
 ## Create and deploy
 
-```bash
-cd services/reading-notes-sync
-npx wrangler d1 create reading-notes-sync
+The personal production deployment is available at:
+
+```text
+https://reading-notes-sync.1109.workers.dev
 ```
 
-Copy the returned database ID into `wrangler.jsonc`, then configure the
-one-time bootstrap secret:
+Its D1 database ID is already recorded in `wrangler.jsonc`. To redeploy:
+
+```bash
+cd services/reading-notes-sync
+npx wrangler d1 migrations apply reading-notes-sync --remote
+npx wrangler deploy
+```
+
+For a new Cloudflare account or a separate deployment, first create another
+database and replace the ID in `wrangler.jsonc`:
+
+```bash
+cd services/reading-notes-sync
+npx wrangler d1 create reading-notes-sync --location apac
+```
+
+Then configure the one-time bootstrap secret:
 
 ```bash
 npx wrangler secret put BOOTSTRAP_TOKEN
@@ -28,6 +44,10 @@ initialization:
 ```bash
 npx wrangler secret delete BOOTSTRAP_TOKEN
 ```
+
+In the userscript, open **读书笔记 → 同步设置**, use the Worker URL as
+the endpoint, enter the one-time `BOOTSTRAP_TOKEN`, and choose
+**初始化笔记库**. The token input is never persisted by the userscript.
 
 For local development:
 

@@ -6,6 +6,22 @@
 
 ## 脚本列表
 
+### AI Agent Book 读书笔记
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js)
+
+为《AI Agents in Depth》电子书增加本地优先的阅读批注能力：
+
+- 选中正文后通过浮动工具栏添加高亮、划线或带观点的批注。
+- 使用文本位置、原文引用和前后文三重锚点，刷新或重新打开章节后自动恢复标记。
+- 在右下角的读书笔记面板中按本页或全书查看、定位、编辑和删除记录。
+- 所有数据只保存在 Tampermonkey 的本地脚本存储中，不上传正文或笔记。
+- 可按全书章节顺序导出为 Markdown 或独立 HTML 网页。
+
+适用页面：
+
+- `https://bojieli.github.io/ai-agent-book/book/*`
+
 ### X 推文分享卡片
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js)

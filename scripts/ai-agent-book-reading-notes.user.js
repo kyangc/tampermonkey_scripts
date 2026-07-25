@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.1
+// @version      0.1.2
 // @description  Highlight, underline, annotate, persist, and export notes from AI Agents in Depth.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -130,6 +130,59 @@
       primaryPath: `M 1 ${points[0]} C 12 ${points[1]}, 23 ${points[2]}, 35 ${points[3]} S 56 ${points[4]}, 68 ${points[5]} S 88 ${points[2]}, 99 ${points[6]}`,
       rotation: (((seed >>> 21) % 9) - 4) / 25,
     };
+  }
+
+  function mergeTextLineRects(rects) {
+    const normalized = Array.from(rects || [])
+      .map((rect) => {
+        const left = Number(rect.left);
+        const top = Number(rect.top);
+        const right = Number.isFinite(Number(rect.right))
+          ? Number(rect.right)
+          : left + Number(rect.width);
+        const bottom = Number.isFinite(Number(rect.bottom))
+          ? Number(rect.bottom)
+          : top + Number(rect.height);
+
+        return {
+          bottom,
+          height: bottom - top,
+          left,
+          right,
+          top,
+          width: right - left,
+        };
+      })
+      .filter((rect) => (
+        Object.values(rect).every(Number.isFinite)
+        && rect.width > 0.5
+        && rect.height > 0.5
+      ))
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+
+    const lines = [];
+    for (const rect of normalized) {
+      const center = (rect.top + rect.bottom) / 2;
+      const previous = lines.at(-1);
+      const tolerance = previous
+        ? Math.max(2, Math.min(previous.height, rect.height) * 0.36)
+        : 0;
+
+      if (previous && Math.abs(center - previous.center) <= tolerance) {
+        previous.left = Math.min(previous.left, rect.left);
+        previous.right = Math.max(previous.right, rect.right);
+        previous.top = Math.min(previous.top, rect.top);
+        previous.bottom = Math.max(previous.bottom, rect.bottom);
+        previous.width = previous.right - previous.left;
+        previous.height = previous.bottom - previous.top;
+        previous.center = (previous.top + previous.bottom) / 2;
+        continue;
+      }
+
+      lines.push({ ...rect, center });
+    }
+
+    return lines.map(({ center: _center, ...rect }) => rect);
   }
 
   function buildTextAnchor(text, start, end, contextLength = CONFIG.contextLength) {
@@ -488,6 +541,7 @@
     getHandUnderlineVariation,
     groupAnnotations,
     locateTextAnchor,
+    mergeTextLineRects,
     normalizeAnnotation,
     normalizePageUrl,
     normalizeStore,
@@ -587,9 +641,12 @@
             rgba(242, 201, 67, 0.045) 1px 3px,
             rgba(255, 222, 105, 0.10) 3px 4px
           );
-        border-radius: 13% 8% 12% 10% / 34% 28% 38% 31%;
+        border-radius: 2px 1px / 22% 18%;
         filter: blur(0.12px);
         mix-blend-mode: multiply;
+      }
+      .aab-reading-brush-mark[data-line-position="single"] {
+        border-radius: 9% 7% 8% 10% / 31% 24% 34% 29%;
       }
       .aab-reading-brush-mark::after {
         position: absolute;
@@ -830,21 +887,55 @@
     return layer;
   }
 
-  function createBrushMark(annotation, rect, lineIndex) {
+  function getRangeTextLineRects(range) {
+    if (!state.root || !range) return [];
+    const walker = document.createTreeWalker(state.root, NodeFilter.SHOW_TEXT);
+    const rects = [];
+    let node;
+
+    while ((node = walker.nextNode())) {
+      try {
+        if (!node.nodeValue || !range.intersectsNode(node)) continue;
+
+        const start = node === range.startContainer ? range.startOffset : 0;
+        const end = node === range.endContainer ? range.endOffset : node.nodeValue.length;
+        if (end <= start) continue;
+
+        const textRange = document.createRange();
+        textRange.setStart(node, start);
+        textRange.setEnd(node, end);
+        rects.push(...textRange.getClientRects());
+      } catch (_error) {
+        // Skip text nodes that became stale during a live page update.
+      }
+    }
+
+    return mergeTextLineRects(rects);
+  }
+
+  function createBrushMark(annotation, rect, lineIndex, lineCount) {
     const variation = getBrushStrokeVariation(annotation.id, lineIndex);
     const mark = document.createElement('span');
     const isNote = annotation.type === 'note';
     const heightScale = isNote ? variation.heightScale * 0.92 : variation.heightScale;
     const verticalOffset = isNote ? variation.verticalOffset + 0.025 : variation.verticalOffset;
+    const linePosition = lineCount === 1
+      ? 'single'
+      : lineIndex === 0
+        ? 'first'
+        : lineIndex === lineCount - 1
+          ? 'last'
+          : 'middle';
 
     mark.className = `aab-reading-brush-mark${isNote ? ' aab-reading-brush-mark--note' : ''}`;
     mark.dataset.annotationId = annotation.id;
+    mark.dataset.linePosition = linePosition;
     mark.style.left = `${global.scrollX + rect.left - variation.leftPad}px`;
     mark.style.top = `${global.scrollY + rect.top + rect.height * verticalOffset}px`;
     mark.style.width = `${rect.width + variation.leftPad + variation.rightPad}px`;
     mark.style.height = `${Math.max(7, rect.height * heightScale)}px`;
     mark.style.clipPath = variation.clipPath;
-    mark.style.transform = `rotate(${variation.rotation}deg)`;
+    mark.style.transform = `rotate(${variation.rotation * (lineCount > 1 ? 0.42 : 1)}deg)`;
     return mark;
   }
 
@@ -889,12 +980,11 @@
       const resolved = state.resolved.get(annotation.id);
       if (!resolved) continue;
 
-      const rects = Array.from(resolved.range.getClientRects())
-        .filter((rect) => rect.width > 0.5 && rect.height > 0.5);
+      const rects = getRangeTextLineRects(resolved.range);
 
       rects.forEach((rect, lineIndex) => {
         if (annotation.type === 'highlight' || annotation.type === 'note') {
-          brushFragment.append(createBrushMark(annotation, rect, lineIndex));
+          brushFragment.append(createBrushMark(annotation, rect, lineIndex, rects.length));
         }
         if (annotation.type === 'underline' || annotation.type === 'note') {
           lineFragment.append(createUnderlineMark(annotation, rect, lineIndex));

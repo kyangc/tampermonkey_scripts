@@ -122,6 +122,32 @@ test('creates deterministic hand-drawn underline paths for each line', () => {
   assert.ok(first.rotation >= -0.16 && first.rotation <= 0.16);
 });
 
+test('merges inline text fragments into one compact rectangle per visual line', () => {
+  const lines = core.mergeTextLineRects([
+    { left: 120, top: 10, right: 180, bottom: 30 },
+    { left: 20, top: 10.4, right: 120, bottom: 30.4 },
+    { left: 20, top: 50, right: 190, bottom: 70 },
+    { left: 20, top: 90, right: 72, bottom: 110 },
+  ]);
+
+  assert.deepEqual(lines, [
+    { bottom: 30.4, height: 20.4, left: 20, right: 180, top: 10, width: 160 },
+    { bottom: 70, height: 20, left: 20, right: 190, top: 50, width: 170 },
+    { bottom: 110, height: 20, left: 20, right: 72, top: 90, width: 52 },
+  ]);
+});
+
+test('does not merge a tall block box with nearby visual lines', () => {
+  const lines = core.mergeTextLineRects([
+    { left: 20, top: 10, right: 200, bottom: 30 },
+    { left: 20, top: 50, right: 200, bottom: 70 },
+    { left: 20, top: 10, right: 200, bottom: 70 },
+  ]);
+
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines.map((line) => line.height), [20, 60, 20]);
+});
+
 test('normalizes, filters, and sorts stored annotations', () => {
   const later = annotation({
     anchor: {

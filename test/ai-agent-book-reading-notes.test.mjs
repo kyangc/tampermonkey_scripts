@@ -9,6 +9,10 @@ const userscriptSource = readFileSync(
   new URL('../scripts/ai-agent-book-reading-notes.user.js', import.meta.url),
   'utf8',
 );
+const userStyleSource = readFileSync(
+  new URL('../styles/ai-agent-book-comfort-reading.user.css', import.meta.url),
+  'utf8',
+);
 
 function annotation(overrides = {}) {
   return {
@@ -41,6 +45,25 @@ test('normalizes page URLs by removing query strings and fragments', () => {
   assert.equal(
     core.normalizePageUrl('/ai-agent-book/book/introduction'),
     'https://bojieli.github.io/ai-agent-book/book/introduction/',
+  );
+});
+
+test('reading notes and comfort styles cover the book homepage and chapters', () => {
+  assert.match(
+    userscriptSource,
+    /@match\s+https:\/\/bojieli\.github\.io\/ai-agent-book\/\s*$/m,
+  );
+  assert.match(
+    userscriptSource,
+    /@match\s+https:\/\/bojieli\.github\.io\/ai-agent-book\/book\/\*/,
+  );
+  assert.match(
+    userStyleSource,
+    /@-moz-document regexp\("\^https:\/\/bojieli\\\\\.github\\\\\.io\/ai-agent-book\/\.\*"\)/,
+  );
+  assert.doesNotMatch(
+    userStyleSource,
+    /ai-agent-book\/book\/\.\*/,
   );
 });
 

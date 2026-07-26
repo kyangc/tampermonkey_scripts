@@ -10,6 +10,8 @@
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js)
 
+[点击安装 / 更新舒适阅读 Stylus 样式](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/styles/ai-agent-book-comfort-reading.user.css)
+
 为《AI Agents in Depth》电子书增加本地优先的阅读批注能力：
 
 - 选中正文后通过浮动工具栏添加淡色画笔高亮、手绘划线或带观点的手工批注。
@@ -23,6 +25,7 @@
 
 适用页面：
 
+- `https://bojieli.github.io/ai-agent-book/`
 - `https://bojieli.github.io/ai-agent-book/book/*`
 
 云同步后端位于 [`services/reading-notes-sync`](services/reading-notes-sync)，部署步骤和安全边界见其中的 [README](services/reading-notes-sync/README.md)。未配置同步服务时，脚本不会发出任何笔记网络请求。

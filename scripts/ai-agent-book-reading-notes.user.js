@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.2
+// @version      0.3.3
 // @description  Highlight, annotate, resiliently re-anchor, export, and end-to-end encrypt notes across devices.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
 // @supportURL   https://github.com/kyangc/tampermonkey_scripts/issues
 // @updateURL    https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js
 // @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js
+// @match        https://bojieli.github.io/ai-agent-book/
 // @match        https://bojieli.github.io/ai-agent-book/book/*
 // @run-at       document-start
 // @inject-into  content
@@ -1667,6 +1668,8 @@
 
   function getPageOrder() {
     const current = normalizePageUrl(global.location.href);
+    if (current === 'https://bojieli.github.io/ai-agent-book/') return -1;
+
     const seen = new Set();
     let index = 0;
 

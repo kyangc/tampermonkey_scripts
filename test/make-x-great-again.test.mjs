@@ -74,6 +74,74 @@ test('auto-published list hits are visibly labeled and never auto-hidden', () =>
   assert.equal(presentation.canHideManually, true);
 });
 
+test('human-confirmed list hits are eligible for automatic hiding', () => {
+  const index = core.createAccountIndex([['', 'ConfirmedSpam', 'sph']], []);
+  const presentation = core.getAccountPresentation(index.lookup({ handle: 'confirmedspam' }));
+
+  assert.equal(presentation.tierText, '人工确认');
+  assert.equal(presentation.shouldAutoHide, true);
+  assert.equal(presentation.canHideManually, true);
+});
+
+test('confirmed-hit visibility defaults to hidden and can be temporarily switched back to labels', () => {
+  const confirmed = core.decodeEntry(['', 'ConfirmedSpam', 'sph']);
+  const automatic = core.decodeEntry(['', 'AutoListed', 'spa']);
+  const defaults = core.normalizeSettings({});
+
+  assert.deepEqual(defaults, { enabled: true, hideConfirmed: true });
+  assert.equal(
+    core.getAccountVisibility({ entry: confirmed, settings: defaults }),
+    'hidden',
+  );
+  assert.equal(
+    core.getAccountVisibility({ entry: automatic, settings: defaults }),
+    'labeled',
+  );
+  assert.equal(
+    core.getAccountVisibility({
+      entry: confirmed,
+      settings: core.normalizeSettings({ hideConfirmed: false }),
+    }),
+    'labeled',
+  );
+  assert.equal(
+    core.getAccountVisibility({
+      entry: confirmed,
+      settings: core.normalizeSettings({ hideConfirmed: false }),
+      locallyHidden: true,
+    }),
+    'hidden',
+  );
+  assert.equal(
+    core.getAccountVisibility({
+      entry: confirmed,
+      settings: core.normalizeSettings({ enabled: false }),
+      locallyHidden: true,
+    }),
+    'shown',
+  );
+});
+
+test('panel backdrop clicks are consumed so they close without reaching the page below', () => {
+  const backdrop = {};
+  let prevented = false;
+  let stopped = false;
+  const event = {
+    target: backdrop,
+    preventDefault: () => {
+      prevented = true;
+    },
+    stopPropagation: () => {
+      stopped = true;
+    },
+  };
+
+  assert.equal(core.consumeBackdropClick(event, backdrop), true);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(core.consumeBackdropClick({ target: {} }, backdrop), false);
+});
+
 test('list sync refreshes the whitelist but skips the large artifact when the version is unchanged', async () => {
   const values = new Map([
     ['mxga:list-meta:v1', { version: 'v-current', fetchedAt: 1, count: 1200 }],

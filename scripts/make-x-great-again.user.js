@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.3
+// @version      0.1.4
 // @description  Mark public-list spam accounts on X and hide them locally on PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -339,9 +339,25 @@
       badgeText: entry.label === 'porn_bot' ? '色情' : '垃圾',
       categoryText: entry.categoryZh,
       tierText: entry.tier === 'confirmed' ? '人工确认' : '自动收录',
-      shouldAutoHide: false,
+      shouldAutoHide: entry.tier === 'confirmed',
       canHideManually: true,
     };
+  }
+
+  function getAccountVisibility({ entry, settings, locallyHidden = false } = {}) {
+    if (settings?.enabled === false) return 'shown';
+    if (locallyHidden) return 'hidden';
+    const presentation = getAccountPresentation(entry);
+    if (!presentation) return 'shown';
+    if (settings?.hideConfirmed !== false && presentation.shouldAutoHide) return 'hidden';
+    return 'labeled';
+  }
+
+  function consumeBackdropClick(event, backdrop) {
+    if (!event || event.target !== backdrop) return false;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    return true;
   }
 
   function createAccountIndex(entries, whitelistEntries = []) {
@@ -462,6 +478,7 @@
   }
 
   const core = {
+    consumeBackdropClick,
     createAccountIndex,
     createHiddenRegistry,
     createListSynchronizer,
@@ -471,6 +488,8 @@
     extractHandleFromHref,
     findProfileNameBlock,
     getAccountPresentation,
+    getAccountVisibility,
+    normalizeSettings,
     normalizeHandle,
     STORAGE_KEYS,
     validateLiteArtifact,
@@ -484,6 +503,7 @@
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
+    hideConfirmed: true,
   });
   const LIST_STALE_MS = 6 * 60 * 60 * 1000;
   const SYNC_LOCK_MS = 5 * 60 * 1000;
@@ -496,6 +516,7 @@
   function normalizeSettings(raw) {
     return {
       enabled: raw?.enabled !== false,
+      hideConfirmed: raw?.hideConfirmed !== false,
     };
   }
 
@@ -667,6 +688,7 @@
     '.dot.error{background:var(--warn)}',
     '.control-label{font-weight:750;letter-spacing:.01em}',
     '.control-count{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}',
+    '.backdrop{position:fixed;z-index:2147483001;inset:0;background:transparent;cursor:default}',
     '.panel{position:fixed;z-index:2147483002;right:max(12px,env(safe-area-inset-right));bottom:max(64px,calc(env(safe-area-inset-bottom) + 58px));width:min(380px,calc(100vw - 24px));max-height:calc(100vh - 92px);max-height:min(720px,calc(100dvh - 92px));overflow:auto;border:1px solid var(--line);border-radius:20px;background:rgba(22,24,28,.98);color:var(--text);box-shadow:0 18px 60px rgba(0,0,0,.5);overscroll-behavior:contain}',
     '.panel-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;background:rgba(22,24,28,.97);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}',
     '.panel-title{margin:0;font-size:17px;font-weight:800}',
@@ -748,6 +770,7 @@
       '<span class="control-label">MXGA</span>',
       '<span class="control-count" data-role="control-count">—</span>',
       '</button>',
+      '<div class="backdrop" data-role="backdrop" hidden aria-hidden="true"></div>',
       '<section class="panel" id="mxga-panel" hidden aria-label="Make X Great Again 设置">',
       '<header class="panel-header">',
       '<div><h2 class="panel-title">Make X Great Again</h2><p class="panel-subtitle"></p></div>',
@@ -765,12 +788,16 @@
       '<div class="setting-copy"><strong>页面标记与本地隐藏</strong><span>关闭时临时恢复页面，隐藏记录仍保留</span></div>',
       '<label class="switch"><input type="checkbox" data-role="enabled" aria-label="启用页面标记与本地隐藏"><span></span></label>',
       '</div>',
+      '<div class="setting-row">',
+      '<div class="setting-copy"><strong>隐藏明确命中内容</strong><span>关闭后临时显示，手动隐藏记录不变</span></div>',
+      '<label class="switch"><input type="checkbox" data-role="hide-confirmed" aria-label="隐藏人工确认账号及其推文"><span></span></label>',
+      '</div>',
       '<div class="actions"><button class="button primary" type="button" data-action="sync">立即更新名单</button></div>',
       '<section class="section">',
       '<div class="section-heading"><h3>本地隐藏记录</h3><span data-role="hidden-count">0 个</span></div>',
       '<div class="hidden-list" data-role="hidden-list"></div>',
       '</section>',
-      '<p class="privacy">只下载公开名单并在本机匹配；不会上传你浏览的页面、X 账号、命中结果或隐藏记录。首版不执行 X 原生静音/拉黑，也不会自动隐藏任何名单账号。</p>',
+      '<p class="privacy">只下载公开名单并在本机匹配；不会上传你浏览的页面、X 账号、命中结果或隐藏记录。人工确认条目可按开关自动隐藏，自动收录条目只做提示；不会执行 X 原生静音或拉黑。</p>',
       '<div class="links"><button class="link-button" type="button" data-action="open-upstream">上游项目 ↗</button><button class="link-button" type="button" data-action="open-source">本脚本源码 ↗</button></div>',
       '</div>',
       '</section>',
@@ -781,6 +808,7 @@
 
     const elements = {
       control: root.querySelector('.control'),
+      backdrop: root.querySelector('[data-role="backdrop"]'),
       dot: root.querySelector('[data-role="dot"]'),
       controlCount: root.querySelector('[data-role="control-count"]'),
       panel: root.querySelector('.panel'),
@@ -791,6 +819,7 @@
       version: root.querySelector('[data-role="version"]'),
       fetchedAt: root.querySelector('[data-role="fetched-at"]'),
       enabled: root.querySelector('[data-role="enabled"]'),
+      hideConfirmed: root.querySelector('[data-role="hide-confirmed"]'),
       sync: root.querySelector('[data-action="sync"]'),
       hiddenCount: root.querySelector('[data-role="hidden-count"]'),
       hiddenList: root.querySelector('[data-role="hidden-list"]'),
@@ -807,6 +836,7 @@
 
     function setPanel(open) {
       elements.panel.hidden = !open;
+      elements.backdrop.hidden = !open;
       elements.control.setAttribute('aria-expanded', String(open));
       if (open) closePopover();
     }
@@ -864,7 +894,9 @@
         popover,
         'p',
         'popover-copy',
-        '命中 MXGA 公共名单。本脚本只做提示；是否隐藏由你决定，操作只影响本机网页并可随时恢复。',
+        entry.tier === 'confirmed'
+          ? '命中人工确认名单。开启自动隐藏时，列表账号和推文不会展示；你也可以在本机手动隐藏或恢复。'
+          : '命中自动收录名单。此类条目只做提示，不会自动隐藏；你可以选择在本机隐藏。',
       );
 
       const actions = document.createElement('div');
@@ -940,6 +972,7 @@
       elements.version.title = version;
       elements.fetchedAt.textContent = formatTime(view.meta?.fetchedAt);
       elements.enabled.checked = view.settings.enabled;
+      elements.hideConfirmed.checked = view.settings.hideConfirmed;
       elements.sync.disabled = Boolean(view.syncing);
       elements.sync.textContent = view.syncing ? '正在更新…' : '立即更新名单';
       elements.notice.className = 'notice' + (phase === 'loading' || phase === 'error' ? ' ' + phase : '');
@@ -950,7 +983,9 @@
           (view.count > 0 ? '继续使用本地缓存；更新失败：' : '名单尚不可用：') + view.error;
       } else if (view.count > 0) {
         elements.notice.textContent =
-          '本地名单已就绪。自动收录与人工确认条目均只提示，不会自动隐藏。';
+          view.settings.hideConfirmed
+            ? '本地名单已就绪。人工确认条目自动隐藏，自动收录条目只做提示。'
+            : '本地名单已就绪。自动隐藏已临时关闭，命中条目只做提示。';
       } else {
         elements.notice.textContent = '尚未下载名单；首次同步可能需要一些时间。';
       }
@@ -971,6 +1006,10 @@
     elements.popover.addEventListener('mouseenter', cancelPopoverClose);
     elements.popover.addEventListener('mouseleave', schedulePopoverClose);
     root.addEventListener('click', (event) => {
+      if (consumeBackdropClick(event, elements.backdrop)) {
+        setPanel(false);
+        return;
+      }
       const target = event.target instanceof Element ? event.target.closest('[data-action]') : null;
       const action = target?.dataset.action;
       if (!action) return;
@@ -996,6 +1035,9 @@
     elements.enabled.addEventListener('change', () => {
       callbacks.onEnabledChange(elements.enabled.checked);
     });
+    elements.hideConfirmed.addEventListener('change', () => {
+      callbacks.onHideConfirmedChange(elements.hideConfirmed.checked);
+    });
 
     return {
       cancelPopoverClose,
@@ -1016,13 +1058,16 @@
     return null;
   }
 
-  function cellForArticle(article) {
-    const cell = article.closest('[data-testid="cellInnerDiv"]') || article;
+  const ACCOUNT_CONTENT_SELECTOR =
+    'article[data-testid="tweet"], [data-testid="UserCell"]';
+
+  function cellForContent(item) {
+    const cell = item.closest('[data-testid="cellInnerDiv"]') || item;
     return cell instanceof HTMLElement ? cell : null;
   }
 
-  function hideArticleLocally(article, handle) {
-    const cell = cellForArticle(article);
+  function hideContentLocally(item, handle) {
+    const cell = cellForContent(item);
     const normalized = normalizeHandle(handle);
     if (!cell || !normalized) return;
     if (
@@ -1152,28 +1197,27 @@
   function createScanner(state, ui) {
     let scheduled = false;
 
-    function processArticle(article) {
-      const nameBlock = article.querySelector('[data-testid="User-Name"]');
+    function processContentItem(item) {
+      const nameBlock = item.querySelector('[data-testid="User-Name"]');
       const handle = handleFromNameBlock(nameBlock);
       if (!nameBlock || !handle) return;
       const normalized = normalizeHandle(handle);
-      const cell = cellForArticle(article);
+      const cell = cellForContent(item);
+      const entry = state.index.lookup({ handle: normalized });
+      const visibility = getAccountVisibility({
+        entry,
+        settings: state.settings,
+        locallyHidden: state.hidden.has(normalized),
+      });
 
-      if (!state.settings.enabled) {
+      if (visibility === 'hidden') {
         clearBadgeMounts(nameBlock);
-        revealCell(cell);
-        return;
-      }
-
-      if (state.hidden.has(normalized)) {
-        clearBadgeMounts(nameBlock);
-        hideArticleLocally(article, normalized);
+        hideContentLocally(item, normalized);
         return;
       }
       revealCell(cell);
 
-      const entry = state.index.lookup({ handle: normalized });
-      if (entry) mountOrUpdateBadge(nameBlock, normalized, entry, ui);
+      if (visibility === 'labeled') mountOrUpdateBadge(nameBlock, normalized, entry, ui);
       else clearBadgeMounts(nameBlock);
     }
 
@@ -1198,8 +1242,8 @@
         revealAllUserscriptHidden();
         return;
       }
-      for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
-        processArticle(article);
+      for (const item of document.querySelectorAll(ACCOUNT_CONTENT_SELECTOR)) {
+        processContentItem(item);
       }
       processProfile();
     }
@@ -1212,11 +1256,11 @@
 
     function hideVisible(handle) {
       const normalized = normalizeHandle(handle);
-      for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
-        const nameBlock = article.querySelector('[data-testid="User-Name"]');
+      for (const item of document.querySelectorAll(ACCOUNT_CONTENT_SELECTOR)) {
+        const nameBlock = item.querySelector('[data-testid="User-Name"]');
         if (normalizeHandle(handleFromNameBlock(nameBlock)) !== normalized) continue;
         clearBadgeMounts(nameBlock);
-        hideArticleLocally(article, normalized);
+        hideContentLocally(item, normalized);
       }
     }
 
@@ -1302,8 +1346,8 @@
       await persistHidden();
     }
 
-    async function setEnabled(enabled) {
-      state.settings = normalizeSettings({ ...state.settings, enabled });
+    async function updateSettings(patch) {
+      state.settings = normalizeSettings({ ...state.settings, ...patch });
       render();
       scanner.schedule();
       try {
@@ -1433,7 +1477,10 @@
       {
         onAppeal: () => openExternal(gm, APPEAL_URL),
         onEnabledChange: (enabled) => {
-          void setEnabled(enabled);
+          void updateSettings({ enabled });
+        },
+        onHideConfirmedChange: (hideConfirmed) => {
+          void updateSettings({ hideConfirmed });
         },
         onHide: (handle, entry) => {
           void hideHandle(handle, entry);

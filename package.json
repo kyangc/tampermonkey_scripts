@@ -2,6 +2,9 @@
   "name": "tampermonkey-scripts",
   "private": true,
   "type": "commonjs",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "debug:webk": "node tools/debug-telegram-webk-cdp.js diagnose",
     "debug:webk:single": "node tools/debug-telegram-webk-cdp.js smoke-single",

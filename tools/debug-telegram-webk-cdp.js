@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_PORT = 9222;
-const REQUIRED_DEBUG_API_VERSION = 10;
+const REQUIRED_DEBUG_API_VERSION = 11;
 const USER_SCRIPT = path.resolve(__dirname, "..", "scripts", "telegram-webk-media-downloader.user.js");
 
 function isTelegramWebKUrl(value) {
@@ -38,14 +38,25 @@ function redactDebugUrl(url) {
   return String(url || "").replace(/#.*$/, "");
 }
 
+function isSensitiveDebugKey(key) {
+  const lowerKey = String(key || "").toLowerCase();
+  return (
+    ["title", "text", "message", "caption", "name", "filename", "handlename", "chatid", "peerid", "error"].includes(lowerKey) ||
+    lowerKey.endsWith("title") ||
+    lowerKey.endsWith("name")
+  );
+}
+
 function redactDebugResult(value) {
   if (Array.isArray(value)) return value.map(redactDebugResult);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [
-      key,
-      key === "path" ? redactDebugPath(item) : redactDebugResult(item),
-    ])
+    Object.entries(value).map(([key, item]) => {
+      if (key === "path") return [key, redactDebugPath(item)];
+      if (key.toLowerCase() === "url") return [key, redactDebugUrl(item)];
+      if (isSensitiveDebugKey(key)) return [key, item ? "[redacted]" : item];
+      return [key, redactDebugResult(item)];
+    })
   );
 }
 

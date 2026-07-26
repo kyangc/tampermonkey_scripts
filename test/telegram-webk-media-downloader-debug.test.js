@@ -4,6 +4,7 @@ const test = require("node:test");
 const {
   pickTelegramPageTarget,
   redactDebugPath,
+  redactDebugResult,
   redactDebugUrl,
 } = require("../tools/debug-telegram-webk-cdp");
 
@@ -37,4 +38,35 @@ test("redactDebugPath hides chat directory names while keeping useful file layou
 
 test("redactDebugUrl removes Telegram chat hash from reports", () => {
   assert.equal(redactDebugUrl("https://web.telegram.org/k/#-123"), "https://web.telegram.org/k/");
+});
+
+test("redactDebugResult recursively hides titles, names, ids, paths, and URL hashes", () => {
+  assert.deepEqual(
+    redactDebugResult({
+      target: {
+        title: "Private Chat",
+        url: "https://web.telegram.org/k/#-123",
+      },
+      before: {
+        fileName: "private-photo.jpg",
+        chatId: "-100123",
+        error: "private-photo.jpg failed",
+        nested: { peerId: "peer-123", count: 4 },
+      },
+      files: [{ path: "Private Group__peer-123/images/private-photo.jpg", size: 12 }],
+    }),
+    {
+      target: {
+        title: "[redacted]",
+        url: "https://web.telegram.org/k/",
+      },
+      before: {
+        fileName: "[redacted]",
+        chatId: "[redacted]",
+        error: "[redacted]",
+        nested: { peerId: "[redacted]", count: 4 },
+      },
+      files: [{ path: "<chat-dir>/images/<file>.jpg", size: 12 }],
+    },
+  );
 });

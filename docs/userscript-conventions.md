@@ -67,6 +67,8 @@ npm run check
 
 ## 本地校验
 
+本地校验需要 Node.js 24 或更高版本，与 CI 使用的版本一致。
+
 运行：
 
 ```bash
@@ -82,3 +84,4 @@ npm run validate:userscripts
 - `@namespace`、`@homepageURL`、`@supportURL` 使用本仓库地址。
 - `@updateURL` 和 `@downloadURL` 指向当前文件对应的 GitHub raw URL。
 - 至少配置了一个 `@match` 或 `@include`。
+- README 包含当前脚本对应的可点击 raw 安装链接。

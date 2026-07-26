@@ -58,6 +58,8 @@ https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/examp
 
 ## 常用命令
 
+本地命令需要 Node.js 24 或更高版本，与 CI 使用的版本一致。
+
 ```bash
 npm run check
 npm run validate:userscripts
@@ -67,8 +69,12 @@ node --check scripts/m-team-torrent-enhancer.user.js
 
 ## 当前脚本
 
+- `scripts/ai-agent-book-reading-notes.user.js`：AI Agent Book 阅读批注、本地导出和可选的端到端加密同步。
 - `scripts/m-team-torrent-enhancer.user.js`：M-Team 种子列表增强，新热种高亮和已访问种子置灰。
+- `scripts/make-x-great-again.user.js`：MXGA 公共名单标记与本地隐藏的跨端 userscript。
+- `scripts/manga18fx-ad-cleaner.user.js`：清理 Manga18fx banner、漂浮广告和反广告拦截提示。
+- `scripts/simpcity-ad-cleaner.user.js`：拦截 SimpCity/Turbo 广告跳转并清理广告位。
 - `scripts/telegram-webk-media-downloader.user.js`：下载 Telegram WebK 当前聊天中的图片、视频和文档。
+- `scripts/x-tweet-share-card.user.js`：从 X 原生分享菜单生成可复制的推文分享卡片。
 
-M-Team 脚本已有 `test/m-team-torrent-enhancer.test.mjs` 覆盖核心评分、已读记录和样式状态逻辑。
-Telegram 下载器的核心逻辑与 CDP 工具分别由 `test/telegram-webk-media-downloader.test.js` 和 `test/telegram-webk-media-downloader-debug.test.js` 覆盖。
+每个脚本都在 `test/` 下有对应的聚焦测试；Telegram 下载器的核心逻辑与 CDP 工具分别由 `test/telegram-webk-media-downloader.test.js` 和 `test/telegram-webk-media-downloader-debug.test.js` 覆盖。完整说明和安装入口以 `README.md` 为准。

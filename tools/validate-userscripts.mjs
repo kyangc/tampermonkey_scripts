@@ -7,6 +7,7 @@ import process from 'node:process';
 const REPO_URL = 'https://github.com/kyangc/tampermonkey_scripts';
 const RAW_BASE_URL = 'https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main';
 const USERSCRIPT_DIR = 'scripts';
+const README_PATH = 'README.md';
 const REQUIRED_FIELDS = [
   'name',
   'namespace',
@@ -62,7 +63,7 @@ function hasAny(metadata, keys) {
   return keys.some((key) => (metadata.get(key) || []).some((value) => value.trim()));
 }
 
-function validateFile(filePath) {
+function validateFile(filePath, readmeSource) {
   const errors = [];
   const relativePath = path.relative(process.cwd(), filePath).split(path.sep).join('/');
   const fileName = path.basename(filePath);
@@ -109,6 +110,10 @@ function validateFile(filePath) {
     errors.push('@version must use x.y.z format');
   }
 
+  if (!readmeSource.includes(`](${expectedRawUrl})`)) {
+    errors.push(`README.md must contain a clickable raw install link to ${expectedRawUrl}`);
+  }
+
   return errors;
 }
 
@@ -117,6 +122,7 @@ function main() {
   const userscripts = walkFiles(userscriptRoot)
     .filter((filePath) => filePath.endsWith('.user.js'))
     .sort();
+  const readmeSource = readFileSync(path.join(process.cwd(), README_PATH), 'utf8');
 
   if (userscripts.length === 0) {
     console.error(`No .user.js files found under ${USERSCRIPT_DIR}/`);
@@ -128,7 +134,7 @@ function main() {
 
   for (const filePath of userscripts) {
     const relativePath = path.relative(process.cwd(), filePath).split(path.sep).join('/');
-    const errors = validateFile(filePath);
+    const errors = validateFile(filePath, readmeSource);
 
     if (errors.length === 0) {
       console.log(`ok ${relativePath}`);

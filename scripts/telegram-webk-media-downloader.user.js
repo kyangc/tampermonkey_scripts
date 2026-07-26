@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram WebK Media Downloader
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.0
+// @version      0.2.1
 // @description  Download Telegram WebK media into a user-selected local directory.
 // @author       kyangc
 // @license      MIT
@@ -22,7 +22,7 @@
     id: "tg-webk-media-downloader",
     testApiKey: "__TG_WEBK_MEDIA_DOWNLOADER_TESTS__",
     debugApiKey: "__TG_WEBK_MEDIA_DOWNLOADER_DEBUG__",
-    debugApiVersion: 10,
+    debugApiVersion: 11,
     panelPositionKey: "tg-webk-media-downloader:panel-position",
     directoryDbName: "tg-webk-media-downloader",
     directoryStoreName: "handles",
@@ -83,7 +83,7 @@
   function sanitizeDebugValue(key, value) {
     const lowerKey = String(key || "").toLowerCase();
     if (
-      ["title", "text", "message", "caption", "name", "filename", "handlename", "chatid", "peerid"].includes(lowerKey) ||
+      ["title", "text", "message", "caption", "name", "filename", "handlename", "chatid", "peerid", "error"].includes(lowerKey) ||
       lowerKey.endsWith("title") ||
       lowerKey.endsWith("name")
     ) {
@@ -102,6 +102,33 @@
       clean[key] = sanitizeDebugValue(key, value);
     }
     return clean;
+  }
+
+  function debugStatusCode(value) {
+    const status = String(value || "").trim();
+    if (!status) return "";
+    if (/^ready$/i.test(status)) return "ready";
+    if (/^done\.$/i.test(status)) return "done";
+    if (/^done with (?:errors|warnings)/i.test(status)) return "done-with-warnings";
+    if (/^stopped\.$/i.test(status)) return "stopped";
+    if (/^stopping scan/i.test(status)) return "stopping-scan";
+    if (/^stopping download/i.test(status)) return "stopping-download";
+    if (/^scanning/i.test(status)) return "scanning";
+    if (/^downloading/i.test(status)) return "downloading";
+    if (/^downloaded/i.test(status)) return "downloaded";
+    if (/^skipped/i.test(status)) return "skipped";
+    if (/^queued/i.test(status)) return "queued";
+    if (/^date limit/i.test(status)) return "date-limit";
+    if (/^directory (?:ready|restored)/i.test(status)) return "directory-ready";
+    if (/^saved directory needs permission/i.test(status)) return "directory-permission-required";
+    if (/^directory selection canceled/i.test(status)) return "directory-selection-canceled";
+    if (/^choose a download directory/i.test(status)) return "directory-required";
+    if (/^enable at least one media type/i.test(status)) return "media-filter-required";
+    if (/^no supported media/i.test(status)) return "no-supported-media";
+    if (/^could not resolve message/i.test(status)) return "message-resolution-failed";
+    if (/chat changed/i.test(status)) return "chat-changed";
+    if (/failed|error|denied|unavailable|does not expose/i.test(status)) return "error";
+    return "other";
   }
 
   function recordDebugEvent(event, detail = {}) {
@@ -157,7 +184,7 @@
         dateCutoff: state.dateCutoff,
         dateCutoffReached: state.dateCutoffReached,
         counters: { ...state.counters },
-        status: status || headerStatus,
+        status: debugStatusCode(status || headerStatus),
         scan: {
           active: state.scan.active,
           stopped: state.scan.stopped,
@@ -722,6 +749,19 @@
     return ["image", "video", "document"].some((type) => Boolean(filters?.[type]));
   }
 
+  function snapshotMediaFilters(filters = state.filters) {
+    return {
+      image: Boolean(filters?.image),
+      video: Boolean(filters?.video),
+      document: Boolean(filters?.document),
+    };
+  }
+
+  function filterMediaItems(items, filters = state.filters) {
+    const snapshot = snapshotMediaFilters(filters);
+    return (items || []).filter((item) => Boolean(snapshot[item?.type]));
+  }
+
   function getStartSettingsBlocker({ hasStorage = Boolean(state.storage), filters = state.filters } = {}) {
     if (!hasStorage) return "Choose a download directory first.";
     if (!hasEnabledMediaFilter(filters)) return "Enable at least one media type.";
@@ -786,18 +826,21 @@
 
   function finishScanTask(items, { autoStart = true, source = "batch" } = {}) {
     const scanSnapshot = state.scan.chatSnapshot;
-    const queueItems = Array.isArray(items) ? items : [];
-    state.scan.counters.discovered = queueItems.length;
+    const job = createDownloadJob({
+      source,
+      chatInfo: scanSnapshot || state.currentChat,
+      items: Array.isArray(items) ? items : [],
+    });
+    state.scan.counters.discovered = job.items.length;
     state.scan.active = false;
     state.scan.stopped = false;
     state.scan.status = "Idle";
     state.scan.chatSnapshot = null;
     syncLegacyStopButton();
-    if (!queueItems.length) {
+    if (!job.items.length) {
       updatePanelStatus("No supported media found.");
       return false;
     }
-    const job = createDownloadJob({ source, chatInfo: scanSnapshot || state.currentChat, items: queueItems });
     return enqueueDownloadJob(job, { autoStart });
   }
 
@@ -823,8 +866,14 @@
     return { completionPromise, resolveCompletion, rejectCompletion, completionSettled: false };
   }
 
-  function createDownloadJob({ source = "batch", chatInfo = state.currentChat, items = [] } = {}) {
-    const normalizedItems = cloneJobItems(items);
+  function createDownloadJob({
+    source = "batch",
+    chatInfo = state.currentChat,
+    items = [],
+    filters = state.filters,
+  } = {}) {
+    const filterSnapshot = snapshotMediaFilters(filters);
+    const normalizedItems = cloneJobItems(filterMediaItems(items, filterSnapshot));
     return {
       jobId: nextJobId(),
       source,
@@ -834,6 +883,7 @@
         chatRevisionAtScanStart: chatInfo.chatRevision ?? state.chatRevision,
       },
       createdAt: new Date().toISOString(),
+      filters: filterSnapshot,
       status: "pending",
       counters: {
         total: normalizedItems.length,
@@ -2069,6 +2119,23 @@
     return job.completionPromise;
   }
 
+  function finalDownloadJobStatus(job, { persistenceFailed = false } = {}) {
+    if (persistenceFailed) return "failed";
+    if (job.stopRequested) return "stopped";
+    if (job.counters.failed > 0 || job.counters.unsupported > 0) return "completed-with-errors";
+    return "completed";
+  }
+
+  function downloadJobStatusMessage(job) {
+    if (job.status === "completed") return "Done.";
+    if (job.status === "completed-with-errors") {
+      const problemCount = job.counters.failed + job.counters.unsupported;
+      return `Done with warnings: ${problemCount} item${problemCount === 1 ? "" : "s"} not downloaded.`;
+    }
+    if (job.status === "stopped") return "Stopped.";
+    return "Download failed.";
+  }
+
   async function runDownloadJob(job, storage = state.storage) {
     if (!storage) {
       job.status = "failed";
@@ -2093,7 +2160,6 @@
     try {
       for (const item of job.items) {
         if (job.stopRequested) break;
-        if (!state.filters[item.type]) continue;
         job.currentItem = item;
         let itemStatus = `Downloading: ${job.chatInfo.chatTitle}`;
         try {
@@ -2145,9 +2211,7 @@
         job.errors.push(`Report write failed: ${error.message || error}`);
         log("Report write failed.", error);
       }
-      if (persistenceFailed) job.status = "failed";
-      else if (job.stopRequested) job.status = "stopped";
-      else job.status = "completed";
+      job.status = finalDownloadJobStatus(job, { persistenceFailed });
       return job;
     } catch (reason) {
       const error = errorFromReason(reason);
@@ -2157,7 +2221,7 @@
     } finally {
       job.currentItem = null;
       recordDebugEvent("queue-job-finish", { jobId: job.jobId, status: job.status });
-      updatePanelStatus(job.status === "completed" ? "Done." : job.status === "stopped" ? "Stopped." : "Download failed.");
+      updatePanelStatus(downloadJobStatusMessage(job));
       if (completionError) settleDownloadJob(job, completionError);
       else settleDownloadJob(job);
     }
@@ -2166,7 +2230,8 @@
   function createHoverDownloadJob(messages, chatInfo = state.currentChat) {
     const items = extractMediaItems(messages, chatInfo);
     if (!items.length) return null;
-    return createDownloadJob({ source: "hover", chatInfo, items });
+    const job = createDownloadJob({ source: "hover", chatInfo, items });
+    return job.items.length ? job : null;
   }
 
   async function downloadBubbleMedia(bubble) {
@@ -2334,7 +2399,6 @@
         return;
       }
       const items = extractMediaItems(messages, batchChat);
-      state.scan.counters.discovered = items.length;
       recordDebugEvent("batch-scan-finish", { messageCount: messages.length, itemCount: items.length });
       finishScanTask(items);
     } catch (error) {
@@ -2369,6 +2433,7 @@
     debugApiVersion: APP.debugApiVersion,
     recordDebugEvent,
     sanitizeDebugDetail,
+    debugStatusCode,
     createDebugReport,
     sanitizePathSegment,
     formatFileTimestamp,
@@ -2396,6 +2461,8 @@
     downloadItemBlob,
     runDownloadQueue,
     runDownloadJob,
+    finalDownloadJobStatus,
+    downloadJobStatusMessage,
     startDownloadWorker,
     stopCurrentDownloadJob,
     beginScanTask,
@@ -2411,6 +2478,8 @@
     resolveMessagesFromBubble,
     scanMadeProgress,
     hasEnabledMediaFilter,
+    snapshotMediaFilters,
+    filterMediaItems,
     getStartSettingsBlocker,
     getScanStartBlocker,
     getActionAvailability,

@@ -369,6 +369,8 @@ test("userscript exposes test helpers", () => {
   assert.equal(typeof api.resolveMessagesFromBubble, "function");
   assert.equal(typeof api.scanMadeProgress, "function");
   assert.equal(typeof api.hasEnabledMediaFilter, "function");
+  assert.equal(typeof api.snapshotMediaFilters, "function");
+  assert.equal(typeof api.filterMediaItems, "function");
   assert.equal(typeof api.getStartSettingsBlocker, "function");
   assert.equal(typeof api.getScanStartBlocker, "function");
   assert.equal(typeof api.getActionAvailability, "function");
@@ -380,6 +382,8 @@ test("userscript exposes test helpers", () => {
   assert.equal(typeof api.enqueueDownloadJob, "function");
   assert.equal(typeof api.dequeueNextDownloadJob, "function");
   assert.equal(typeof api.runDownloadJob, "function");
+  assert.equal(typeof api.finalDownloadJobStatus, "function");
+  assert.equal(typeof api.downloadJobStatusMessage, "function");
   assert.equal(typeof api.startDownloadWorker, "function");
   assert.equal(typeof api.stopCurrentDownloadJob, "function");
   assert.equal(typeof api.beginScanTask, "function");
@@ -855,6 +859,28 @@ test("createDownloadJob freezes chat info and initializes counters", () => {
   assert.equal(typeof job.rejectCompletion, "function");
 });
 
+test("createDownloadJob freezes filters and excludes disabled media from counters", () => {
+  const api = loadTestApi();
+  const filters = { image: true, video: false, document: false };
+  const job = api.createDownloadJob({
+    source: "batch",
+    chatInfo: { chatTitle: "Filtered", chatId: "filtered-peer", chatRevision: 1 },
+    filters,
+    items: [
+      { mid: "1", type: "image", chatTitle: "Filtered", chatId: "filtered-peer" },
+      { mid: "2", type: "video", chatTitle: "Filtered", chatId: "filtered-peer" },
+    ],
+  });
+
+  filters.image = false;
+  filters.video = true;
+
+  assert.deepEqual(job.filters, { image: true, video: false, document: false });
+  assert.deepEqual(job.items.map((item) => item.type), ["image"]);
+  assert.equal(job.counters.total, 1);
+  assert.equal(job.counters.discovered, 1);
+});
+
 test("download queue preserves FIFO order", () => {
   const api = loadTestApi();
   const first = api.createDownloadJob({
@@ -1067,6 +1093,32 @@ test("createHoverDownloadJob ignores empty or unsupported messages", () => {
     }),
     null,
   );
+});
+
+test("createHoverDownloadJob ignores media disabled by the current filter snapshot", () => {
+  const api = loadTestApi();
+  api.createPanel();
+  const videoFilter = api.__unsafeWindow.document.querySelector('[data-tg-wmk-filter="video"]');
+  videoFilter.checked = false;
+  videoFilter.dispatchEvent({ type: "change", target: videoFilter });
+
+  const job = api.createHoverDownloadJob(
+    [{
+      mid: "32",
+      date: 1714518000,
+      media: {
+        document: {
+          _: "document",
+          id: "video-32",
+          file_name: "clip.mp4",
+          mime_type: "video/mp4",
+        },
+      },
+    }],
+    { chatTitle: "Hover Chat", chatId: "hover-peer" },
+  );
+
+  assert.equal(job, null);
 });
 
 test("hover click enqueues a frozen chat job without waiting for active downloads", async () => {
@@ -1282,6 +1334,9 @@ test("chat snapshots reject transient navigation even after returning to the ori
 
 test("debug report summarizes safe runtime diagnostics", () => {
   const api = loadTestApi();
+  api.createPanel();
+  api.__unsafeWindow.document.querySelector("#tg-wmk-status").textContent =
+    "Downloading 20260726_120000_mid-1_document_private-file.pdf";
   api.recordDebugEvent("download-start", { mid: "123", chatTitle: "private title", nested: { ignored: true } });
   const report = api.createDebugReport({ visibleBubbles: 4, downloadableBubbles: 2 });
 
@@ -1294,8 +1349,10 @@ test("debug report summarizes safe runtime diagnostics", () => {
   assert.equal(report.runtime.visibleBubbles, 4);
   assert.equal(report.runtime.downloadableBubbles, 2);
   assert.equal(report.webk.appDownloadManager, false);
-  assert.equal(report.events.length, 1);
-  assert.deepEqual(report.events[0].detail, { mid: "123", chatTitle: "[redacted]", nested: "[object]" });
+  assert.equal(report.state.status, "downloading");
+  assert.equal(JSON.stringify(report).includes("private-file.pdf"), false);
+  assert.equal(report.events.length >= 1, true);
+  assert.deepEqual(report.events.at(-1).detail, { mid: "123", chatTitle: "[redacted]", nested: "[object]" });
 });
 
 test("debug report legacy task fields are derived from scan and download queue state", () => {
@@ -1638,6 +1695,48 @@ test("runDownloadJob writes files using the queued item chat info", async () => 
   const chatDir = await root.getDirectoryHandle("Old Chat__peer-old-peer", { create: false });
   const imagesDir = await chatDir.getDirectoryHandle("images", { create: false });
   assert.equal(imagesDir.children.size, 1);
+});
+
+test("runDownloadJob reports handled media failures instead of showing a clean completion", async () => {
+  const api = loadTestApi();
+  const root = new api.FakeDirectoryHandle("root");
+  api.createPanel();
+  api.__unsafeWindow.appDownloadManager = {
+    async downloadMedia() {
+      throw new Error("private-file.pdf failed");
+    },
+  };
+  const storage = new api.StorageManager(root);
+  const job = api.createDownloadJob({
+    source: "batch",
+    chatInfo: { chatTitle: "Failure Chat", chatId: "failure-peer", chatRevision: 1 },
+    items: [{
+      chatTitle: "Failure Chat",
+      chatId: "failure-peer",
+      mid: "22",
+      mediaId: "document-22",
+      type: "document",
+      originalName: "private-file.pdf",
+      extension: "pdf",
+      mimeType: "application/pdf",
+      size: 12,
+      sentAt: new Date(2026, 4, 1, 10, 10, 0),
+      media: { _: "document", id: "document-22" },
+      source: "document",
+    }],
+  });
+
+  await api.runDownloadJob(job, storage);
+
+  assert.equal(job.status, "completed-with-errors");
+  assert.equal(job.counters.failed, 1);
+  assert.equal(
+    api.__unsafeWindow.document.querySelector("#tg-wmk-status").textContent,
+    "Done with warnings: 1 item not downloaded.",
+  );
+  const report = api.createDebugReport();
+  assert.equal(report.state.status, "done-with-warnings");
+  assert.equal(JSON.stringify(report).includes("private-file.pdf"), false);
 });
 
 test("runDownloadJob mirrors job counters into existing state counters", async () => {

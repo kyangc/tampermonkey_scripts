@@ -68,5 +68,7 @@ node --check scripts/m-team-torrent-enhancer.user.js
 ## 当前脚本
 
 - `scripts/m-team-torrent-enhancer.user.js`：M-Team 种子列表增强，新热种高亮和已访问种子置灰。
+- `scripts/telegram-webk-media-downloader.user.js`：下载 Telegram WebK 当前聊天中的图片、视频和文档。
 
-这个脚本已有 `test/m-team-torrent-enhancer.test.mjs` 覆盖核心评分、已读记录和样式状态逻辑。
+M-Team 脚本已有 `test/m-team-torrent-enhancer.test.mjs` 覆盖核心评分、已读记录和样式状态逻辑。
+Telegram 下载器的核心逻辑与 CDP 工具分别由 `test/telegram-webk-media-downloader.test.js` 和 `test/telegram-webk-media-downloader-debug.test.js` 覆盖。

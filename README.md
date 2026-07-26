@@ -111,6 +111,25 @@ iOS / iPadOS 安装：
 
 - `https://kp.m-team.cc/*`
 
+### Telegram WebK 媒体下载器
+
+[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/telegram-webk-media-downloader.user.js)
+
+把 Telegram WebK 当前聊天中的图片、视频和文档下载到用户选择的本地目录：
+
+- 支持悬停后逐条下载，也可扫描当前聊天并批量加入下载队列。
+- 可按媒体类型和日期筛选；切换聊天时会终止不安全的批量扫描。
+- 按聊天和资源类型整理文件，并写入 manifest 与本次下载报告。
+- 根据规划文件名和文件大小跳过已存在文件。
+- 目录句柄只保存在浏览器本地，调试报告不包含聊天正文，并会遮蔽标题、名称和聊天 ID。
+
+适用页面：
+
+- `https://web.telegram.org/k/*`
+- `https://webk.telegram.org/*`
+
+脚本依赖 File System Access API 和 Telegram WebK 的内部下载对象。首次从旧独立仓库版本迁移时，请通过上面的新链接重新安装一次；后续版本会从本仓库自动检查更新。完整用法、输出目录和调试说明见 [Telegram WebK 媒体下载器文档](docs/telegram-webk-media-downloader.md)。
+
 ### SimpCity 广告清理
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/simpcity-ad-cleaner.user.js)

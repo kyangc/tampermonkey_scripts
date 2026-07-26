@@ -298,6 +298,14 @@ test('metadata exposes the cross-platform interface required by Tampermonkey and
   assert.deepEqual(metadataValues('downloadURL'), metadataValues('updateURL'));
 });
 
+test('settings version metric stays on one line while retaining the full machine version', () => {
+  assert.match(
+    scriptText,
+    /\[data-role="version"\]\{[^}]*overflow:hidden;[^}]*text-overflow:ellipsis;[^}]*white-space:nowrap[^}]*\}/,
+  );
+  assert.match(scriptText, /elements\.version\.title\s*=\s*version;/);
+});
+
 test('userscript contains no X private API or page-world network client', () => {
   assert.doesNotMatch(scriptText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
   assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users|\/i\/api\/|graphql)/i);

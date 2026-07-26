@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.2
+// @version      0.1.3
 // @description  Mark public-list spam accounts on X and hide them locally on PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -678,9 +678,10 @@
     '.notice.error{border-color:rgba(245,158,11,.45);color:#fbbf24}',
     '.notice.loading{border-color:rgba(29,155,240,.4);color:#8ecdf8}',
     '.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}',
-    '.metric{padding:10px 11px;border-radius:12px;background:var(--soft)}',
+    '.metric{min-width:0;padding:10px 11px;border-radius:12px;background:var(--soft)}',
     '.metric-label{display:block;color:var(--muted);font-size:11px}',
-    '.metric-value{display:block;margin-top:3px;font-weight:750;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}',
+    '.metric-value{display:block;min-width:0;margin-top:3px;font-weight:750;font-variant-numeric:tabular-nums}',
+    '[data-role="version"]{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.setting-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-top:1px solid var(--line)}',
     '.setting-copy strong{display:block;font-size:14px}',
     '.setting-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px}',
@@ -934,7 +935,9 @@
       elements.controlCount.textContent = view.count > 0 ? formatCount(view.count) : '待同步';
       elements.blackCount.textContent = Number(view.count || 0).toLocaleString('zh-CN');
       elements.whiteCount.textContent = Number(view.whitelistCount || 0).toLocaleString('zh-CN');
-      elements.version.textContent = view.meta?.version || '—';
+      const version = view.meta?.version || '—';
+      elements.version.textContent = version;
+      elements.version.title = version;
       elements.fetchedAt.textContent = formatTime(view.meta?.fetchedAt);
       elements.enabled.checked = view.settings.enabled;
       elements.sync.disabled = Boolean(view.syncing);

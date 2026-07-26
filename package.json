@@ -6,12 +6,14 @@
     "node": ">=24"
   },
   "scripts": {
+    "build:userscripts": "node tools/build-userscripts.mjs",
+    "check:generated": "node tools/build-userscripts.mjs --check",
     "debug:webk": "node tools/debug-telegram-webk-cdp.js diagnose",
     "debug:webk:single": "node tools/debug-telegram-webk-cdp.js smoke-single",
     "debug:webk:batch-visible": "node tools/debug-telegram-webk-cdp.js smoke-visible-batch",
     "test": "node --test",
     "validate:userscripts": "node tools/validate-userscripts.mjs",
     "syntax:userscripts": "find scripts -name '*.user.js' -print0 | xargs -0 -n1 node --check",
-    "check": "npm run validate:userscripts && npm run syntax:userscripts && npm test"
+    "check": "npm run check:generated && npm run validate:userscripts && npm run syntax:userscripts && npm test"
   }
 }

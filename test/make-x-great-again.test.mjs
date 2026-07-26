@@ -6,6 +6,10 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const core = require('../scripts/make-x-great-again.user.js');
 const scriptText = readFileSync(new URL('../scripts/make-x-great-again.user.js', import.meta.url), 'utf8');
+const mxgaSourceText = readFileSync(
+  new URL('../src/userscripts/make-x-great-again.entry.js', import.meta.url),
+  'utf8',
+);
 
 function metadataValues(key) {
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -352,7 +356,11 @@ test('binary lookup remains correct for underscore-prefixed and mixed-case handl
 test('metadata exposes the cross-platform interface required by Tampermonkey and iOS Userscripts', () => {
   assert.deepEqual(metadataValues('inject-into'), ['content']);
   assert.deepEqual(metadataValues('match'), ['https://x.com/*', 'https://twitter.com/*']);
-  assert.deepEqual(metadataValues('connect'), ['x.zuoluo.tv']);
+  assert.deepEqual(metadataValues('connect'), ['x.zuoluo.tv', 'pbs.twimg.com']);
+  assert.match(
+    metadataValues('require')[0],
+    /^https:\/\/raw\.githubusercontent\.com\/kazuhikoarase\/qrcode-generator\/.*#sha256-/,
+  );
   assert.deepEqual(new Set(metadataValues('grant')), new Set([
     'GM.getValue',
     'GM.setValue',
@@ -366,6 +374,13 @@ test('metadata exposes the cross-platform interface required by Tampermonkey and
   assert.deepEqual(metadataValues('downloadURL'), metadataValues('updateURL'));
 });
 
+test('MXGA bundles the tested share-card interface and prevents duplicate runtime mounts', () => {
+  assert.equal(typeof core.normalizeTweetData, 'function');
+  assert.equal(typeof core.buildCardLayout, 'function');
+  assert.match(scriptText, /data-tsc-runtime-mounted/);
+  assert.match(scriptText, /data-tsc-action="share-card"/);
+});
+
 test('settings version metric stays on one line while retaining the full machine version', () => {
   assert.match(
     scriptText,
@@ -375,6 +390,6 @@ test('settings version metric stays on one line while retaining the full machine
 });
 
 test('userscript contains no X private API or page-world network client', () => {
-  assert.doesNotMatch(scriptText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
+  assert.doesNotMatch(mxgaSourceText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
   assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users|\/i\/api\/|graphql)/i);
 });

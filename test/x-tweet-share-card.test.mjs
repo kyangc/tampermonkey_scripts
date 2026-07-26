@@ -773,3 +773,8 @@ test('recognizes current localized X share buttons even without a data-testid', 
 test('hides the loading layer after the generated preview becomes ready', () => {
   assert.match(scriptText, /\.loading\[hidden\]\{display:none\}/);
 });
+
+test('standalone compatibility script claims one shared runtime per page', () => {
+  assert.match(scriptText, /hasAttribute\('data-tsc-runtime-mounted'\)/);
+  assert.match(scriptText, /setAttribute\('data-tsc-runtime-mounted', ''\)/);
+});

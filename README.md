@@ -36,9 +36,11 @@
 https://reading-notes-sync.1109.workers.dev
 ```
 
-### X 推文分享卡片
+### X 推文分享卡片（独立兼容版）
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js)
+
+分享卡片能力已经内置在 Make X Great Again 0.2.0 及以上版本。只需要分享图、不需要名单标记与本地隐藏时，可以继续安装这个独立兼容版；已经启用 MXGA 时无需再启用它。
 
 在 X 推文原生分享菜单中增加“生成分享图”入口：
 
@@ -71,6 +73,7 @@ https://reading-notes-sync.1109.workers.dev
 
 - 定期同步 MXGA 公共名单与官方白名单，匹配全程在本机完成。
 - 在 X 首页、搜索、状态页、评论区和个人主页显示名单徽标。
+- 在 X 原生分享菜单中增加“生成分享图”，支持作者、正文、配图、视频封面、引用/回复、原文二维码以及复制/下载 PNG。
 - PC 支持悬停、键盘聚焦和点击；iPhone / iPad 使用点击与底部弹层。
 - 默认隐藏人工确认账号的列表项与推文，可在脚本面板临时关闭；自动收录条目仍只提示。
 - 可手动本地隐藏账号内容，5 秒内撤销，也可从脚本面板恢复；手动隐藏记录不受自动隐藏开关影响。
@@ -81,8 +84,10 @@ https://reading-notes-sync.1109.workers.dev
 
 - 不上传页面内容、X 身份、命中结果或本地隐藏记录。
 - 不调用 X 私有接口，不执行 X 原生静音或拉黑。
+- 分享图只读取页面已展示的推文内容；图片通过 `pbs.twimg.com` 在本地加载并在 Canvas 中生成，不上传推文数据。
 - 只作用于 PC / iOS 浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
 - 请勿与原版 MXGA 浏览器扩展同时启用，以免出现重复徽标和两套隐藏记录。
+- MXGA 已内置分享卡片；无需同时启用上面的独立兼容版。若两者都为新版本，页面级保护也只会启动一份分享卡片运行时。
 
 PC 安装：
 
@@ -99,7 +104,7 @@ iOS / iPadOS 安装：
 4. 粘贴上面的 raw 安装链接，保存并启用脚本。
 5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
 
-兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。iOS Userscripts 的真实设备内存、安装更新和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
+兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片合并部分沿用独立版的纯逻辑回归测试，但合并后的 Raw 文件仍需补一次真实浏览器验收。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
 
 ### M-Team 种子列表增强
 
@@ -179,8 +184,9 @@ iOS / iPadOS 安装：
 ## 仓库结构
 
 - `scripts/`：Tampermonkey `.user.js` 脚本。
+- `src/userscripts/`：共享 userscript 入口和运行时模块源码。
 - `test/`：脚本中纯逻辑部分的 Node 测试。
-- `tools/`：本仓库的工程校验脚本。
+- `tools/`：userscript 生成与工程校验脚本。
 - `LICENSES/`：衍生脚本所需的开源许可证全文。
 - `docs/userscript-conventions.md`：油猴脚本发布和更新约定。
 - `AGENTS.md`：给新 AI thread / coding agent 的项目操作说明。
@@ -193,6 +199,12 @@ iOS / iPadOS 安装：
 
 ```bash
 npm run check
+```
+
+修改 `src/userscripts/` 后，先生成可发布脚本：
+
+```bash
+npm run build:userscripts
 ```
 
 推送到 `main` 或创建 Pull Request 后，[GitHub Actions](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 会在只读权限下自动运行同一套检查；检查通过不等于 iOS 真机验收通过。

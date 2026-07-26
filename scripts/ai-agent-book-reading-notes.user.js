@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.0
+// @version      0.3.1
 // @description  Highlight, annotate, resiliently re-anchor, export, and end-to-end encrypt notes across devices.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -9,7 +9,7 @@
 // @updateURL    https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js
 // @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js
 // @match        https://bojieli.github.io/ai-agent-book/book/*
-// @run-at       document-idle
+// @run-at       document-start
 // @inject-into  content
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1171,12 +1171,15 @@
   if (!global?.document) return;
 
   const state = {
+    bootstrapAttempts: 0,
+    bootstrapTimer: null,
     brushLayer: null,
     brushRefreshTimer: null,
     candidates: new Map(),
     composer: null,
     filter: 'current',
     highlightsSupported: Boolean(global.CSS?.highlights && global.Highlight),
+    initialized: false,
     observer: null,
     pairingTimer: null,
     pendingSelection: null,
@@ -1648,7 +1651,7 @@
     const style = document.createElement('style');
     style.dataset.aabReadingNotes = 'highlights';
     style.textContent = css;
-    document.head.append(style);
+    (document.head || document.documentElement).append(style);
   }
 
   function getArticleRoot() {
@@ -3699,11 +3702,7 @@
     global.clearTimeout(state.refreshTimer);
     state.refreshTimer = global.setTimeout(() => {
       syncUiTheme();
-      if (getArticleRoot() !== state.root) {
-        renderHighlights();
-      } else {
-        scheduleHandDrawnMarkRefresh();
-      }
+      renderHighlights();
     }, 120);
   }
 
@@ -3732,14 +3731,18 @@
       hideToolbar();
       scheduleHandDrawnMarkRefresh();
     });
+    global.addEventListener('load', scheduleRefresh);
     global.addEventListener('popstate', scheduleRefresh);
     global.addEventListener('pageshow', scheduleRefresh);
     global.addEventListener('online', () => scheduleSync(250));
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') scheduleSync(350);
+      if (document.visibilityState !== 'visible') return;
+      scheduleRefresh();
+      scheduleSync(350);
     });
 
     state.observer = new MutationObserver((mutations) => {
+      const articleRoot = getArticleRoot();
       const pageChanged = mutations.some((mutation) => (
         Array.from(mutation.addedNodes).some((node) => (
           node.nodeType === Node.ELEMENT_NODE
@@ -3752,14 +3755,24 @@
         && mutation.target === document.body
         && mutation.attributeName === 'data-md-color-scheme'
       ));
-      if (pageChanged || themeChanged) scheduleRefresh();
+      const articleChanged = Boolean(articleRoot) && mutations.some((mutation) => (
+        mutation.target === articleRoot || articleRoot.contains(mutation.target)
+      ));
+      if (pageChanged || articleChanged || themeChanged) scheduleRefresh();
     });
     state.observer.observe(document.documentElement, {
       attributeFilter: ['data-md-color-scheme'],
       attributes: true,
+      characterData: true,
       childList: true,
       subtree: true,
     });
+
+    if (document.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        if (state.initialized) scheduleHandDrawnMarkRefresh();
+      }).catch(() => {});
+    }
 
     if (typeof GM_addValueChangeListener === 'function') {
       GM_addValueChangeListener(CONFIG.storageKey, (_name, _oldValue, newValue, remote) => {
@@ -3785,6 +3798,12 @@
   }
 
   function init() {
+    if (state.initialized) {
+      scheduleRefresh();
+      return;
+    }
+    state.initialized = true;
+    global.clearTimeout(state.bootstrapTimer);
     state.store = loadStore();
     state.sync = loadSyncState();
     installGlobalStyles();
@@ -3796,9 +3815,27 @@
     if (isSyncConfigured()) scheduleSync(700);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, { once: true });
-  } else {
+  function bootstrap() {
+    if (state.initialized) {
+      scheduleRefresh();
+      return;
+    }
+
+    if (!document.documentElement) {
+      state.bootstrapAttempts += 1;
+      if (state.bootstrapAttempts <= 8) {
+        const delay = Math.min(1200, 25 * (2 ** (state.bootstrapAttempts - 1)));
+        global.clearTimeout(state.bootstrapTimer);
+        state.bootstrapTimer = global.setTimeout(bootstrap, delay);
+      }
+      return;
+    }
+
     init();
   }
+
+  document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+  global.addEventListener('load', bootstrap, { once: true });
+  global.addEventListener('pageshow', bootstrap);
+  bootstrap();
 })(typeof window !== 'undefined' ? window : globalThis);

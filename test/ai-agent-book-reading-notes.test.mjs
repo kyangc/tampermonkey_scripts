@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const core = require('../scripts/ai-agent-book-reading-notes.user.js');
+const userscriptSource = readFileSync(
+  new URL('../scripts/ai-agent-book-reading-notes.user.js', import.meta.url),
+  'utf8',
+);
 
 function annotation(overrides = {}) {
   return {
@@ -37,6 +42,14 @@ test('normalizes page URLs by removing query strings and fragments', () => {
     core.normalizePageUrl('/ai-agent-book/book/introduction'),
     'https://bojieli.github.io/ai-agent-book/book/introduction/',
   );
+});
+
+test('boots at document-start and keeps late page lifecycle recovery hooks', () => {
+  assert.match(userscriptSource, /@run-at\s+document-start/);
+  assert.match(userscriptSource, /addEventListener\('DOMContentLoaded', bootstrap/);
+  assert.match(userscriptSource, /addEventListener\('load', bootstrap/);
+  assert.match(userscriptSource, /addEventListener\('pageshow', bootstrap/);
+  assert.match(userscriptSource, /document\.fonts\.ready\.then/);
 });
 
 test('builds a text quote and position anchor with bounded context', () => {

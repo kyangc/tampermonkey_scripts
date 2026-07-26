@@ -396,3 +396,20 @@ test('normalizes sync state without retaining malformed pending mutations', () =
   assert.equal(sync.pending[0].deleted, true);
   assert.deepEqual(sync.versions, { 'annotation-1': 2 });
 });
+
+test('gives sync settings a dedicated full-height drawer view', () => {
+  assert.match(
+    userscriptSource,
+    /#sync-panel\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s,
+  );
+  assert.match(
+    userscriptSource,
+    /#drawer\.sync-open \.filters,\s*#drawer\.sync-open #list\s*\{\s*display:\s*none;/,
+  );
+  assert.match(userscriptSource, /function setSyncPanelOpen\(open\)/);
+  assert.match(userscriptSource, /shouldOpen \? '返回笔记' : '同步设置'/);
+  assert.match(
+    userscriptSource,
+    /#drawer\.sync-open \.drawer-footer\s*\{\s*grid-template-columns:\s*1fr;/,
+  );
+});

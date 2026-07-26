@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Agent Book Reading Notes
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.1
+// @version      0.3.2
 // @description  Highlight, annotate, resiliently re-anchor, export, and end-to-end encrypt notes across devices.
 // @author       kyangc
 // @homepageURL  https://github.com/kyangc/tampermonkey_scripts
@@ -2779,11 +2779,32 @@
           cursor: pointer;
         }
         #sync-panel {
-          max-height: min(410px, 54vh);
-          overflow: auto;
-          padding: 14px 20px 16px;
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          padding: 18px 20px 28px;
           background: var(--panel-2);
-          border-bottom: 1px solid var(--border);
+          border-bottom: 0;
+        }
+        #drawer.sync-open .filters,
+        #drawer.sync-open #list {
+          display: none;
+        }
+        #drawer.sync-open .sync-bar {
+          flex: 0 0 auto;
+        }
+        #drawer.sync-open .drawer-footer {
+          grid-template-columns: 1fr;
+        }
+        #drawer.sync-open .drawer-footer [data-action="export-markdown"],
+        #drawer.sync-open .drawer-footer [data-action="export-html"] {
+          display: none;
+        }
+        #drawer.sync-open [data-action="toggle-sync-panel"] {
+          color: var(--accent);
+          border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+          background: color-mix(in srgb, var(--accent) 9%, var(--panel));
         }
         #sync-panel label {
           display: grid;
@@ -2804,11 +2825,12 @@
         }
         #sync-panel input:focus { border-color: var(--accent); }
         .sync-actions {
-          display: flex;
-          flex-wrap: wrap;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 7px;
           margin-top: 12px;
         }
+        .sync-actions button { width: 100%; }
         .sync-actions button,
         .device-row button {
           min-height: 32px;
@@ -3051,6 +3073,7 @@
           #toolbar { max-width: calc(100vw - 16px); }
           #toolbar button { padding: 5px 7px; }
           .drawer-header { padding-top: 16px; }
+          .sync-actions { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
           #drawer, #toast { transition: none; }
@@ -3123,7 +3146,8 @@
         <footer class="drawer-footer">
           <button type="button" data-action="export-markdown">导出 Markdown</button>
           <button type="button" data-action="export-html">导出网页</button>
-          <button type="button" data-action="toggle-sync-panel">同步设置</button>
+          <button id="sync-view-toggle" type="button" data-action="toggle-sync-panel"
+            aria-expanded="false">同步设置</button>
         </footer>
       </aside>
       <div id="modal-layer" hidden>
@@ -3158,6 +3182,7 @@
       syncPanel: shadow.getElementById('sync-panel'),
       syncSecret: shadow.getElementById('sync-secret'),
       syncStatus: shadow.getElementById('sync-status'),
+      syncToggle: shadow.getElementById('sync-view-toggle'),
       pairingInfo: shadow.getElementById('pairing-info'),
       deviceList: shadow.getElementById('device-list'),
       toast: shadow.getElementById('toast'),
@@ -3486,9 +3511,19 @@
 
   function closeDrawer() {
     if (!state.ui) return;
+    setSyncPanelOpen(false);
     state.ui.backdrop.hidden = true;
     state.ui.drawer.classList.remove('open');
     state.ui.drawer.setAttribute('aria-hidden', 'true');
+  }
+
+  function setSyncPanelOpen(open) {
+    const shouldOpen = Boolean(open);
+    state.ui.syncPanel.hidden = !shouldOpen;
+    state.ui.drawer.classList.toggle('sync-open', shouldOpen);
+    state.ui.syncToggle.textContent = shouldOpen ? '返回笔记' : '同步设置';
+    state.ui.syncToggle.setAttribute('aria-expanded', String(shouldOpen));
+    if (shouldOpen) state.ui.syncPanel.scrollTop = 0;
   }
 
   function openComposerForSelection() {
@@ -3575,14 +3610,15 @@
     if (action === 'export-markdown') exportNotes('markdown');
     if (action === 'export-html') exportNotes('html');
     if (action === 'toggle-sync-panel') {
-      state.ui.syncPanel.hidden = !state.ui.syncPanel.hidden;
+      const shouldOpen = state.ui.syncPanel.hidden;
+      setSyncPanelOpen(shouldOpen);
       renderSyncUi();
-      if (!state.ui.syncPanel.hidden && isSyncConfigured()) loadSyncDevices();
+      if (shouldOpen && isSyncConfigured()) loadSyncDevices();
     }
     if (action === 'sync-now') {
       if (isSyncConfigured()) syncNow();
       else {
-        state.ui.syncPanel.hidden = false;
+        setSyncPanelOpen(true);
         renderSyncUi();
         showToast('请先初始化或加入一个同步笔记库。');
       }

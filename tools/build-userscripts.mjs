@@ -12,13 +12,6 @@ const bundles = [
       'src/userscripts/x-tweet-share-card.module.js',
     ],
   },
-  {
-    output: 'scripts/x-tweet-share-card.user.js',
-    sources: [
-      'src/userscripts/x-tweet-share-card.entry.js',
-      'src/userscripts/x-tweet-share-card.module.js',
-    ],
-  },
 ];
 
 async function renderBundle(sources) {

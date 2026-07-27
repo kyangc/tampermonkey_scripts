@@ -8,7 +8,7 @@
 - 每个脚本都必须通过 GitHub raw URL 安装，README 中的安装入口也必须指向 raw URL。
 - 每次修改脚本行为后，都必须提升 `@version`，否则 Tampermonkey 可能不会识别为新版本。
 - 不提交站点 token、cookie、私有 passkey 或其他隐私数据。
-- MXGA 与 X 分享卡片由 `src/userscripts/` 生成；不要只修改 `scripts/` 下的生成文件。
+- MXGA 与其内置 X 分享卡片模块由 `src/userscripts/` 生成；不要只修改 `scripts/` 下的生成文件。
 
 ## 必需元信息
 

@@ -36,33 +36,6 @@
 https://reading-notes-sync.1109.workers.dev
 ```
 
-### X 推文分享卡片（独立兼容版）
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/x-tweet-share-card.user.js)
-
-分享卡片能力已经内置在 Make X Great Again 0.2.0 及以上版本。只需要分享图、不需要名单标记与本地隐藏时，可以继续安装这个独立兼容版；已经启用 MXGA 时无需再启用它。
-
-在 X 推文原生分享菜单中增加“生成分享图”入口：
-
-- 将作者、账号、正文、发布时间和最多 4 张推文图片排版成独立卡片。
-- 单张配图按原始比例完整展示；多张配图参照 X 使用双列、左大右双格或 2×2 网格，并统一添加圆角边框。
-- 视频推文使用页面可见的封面图并叠加播放标；认证作者会保留认证徽章。
-- 引用推文和对话页中的回复会以嵌套推文卡片展示可见的作者、正文和配图。
-- 正文中的 @提及、#话题和完整链接使用 X 品牌蓝突出显示；长链接按类似 CSS `text-wrap` 的方式利用剩余行宽。
-- 海报底部在内容卡片之外展示原文链接和本地生成的二维码，扫码即可打开对应推文。
-- 在弹窗中预览生成结果，并直接复制 PNG 到剪贴板。
-- 浏览器不支持图片剪贴板或复制被拒绝时，可下载 PNG 作为兜底。
-- 只读取页面已经展示的推文内容，图片在当前浏览器内生成，不调用 X 私有接口，也不会上传推文数据。
-
-当前优先支持普通文字、图片、视频、引用推文和对话页回复；投票和更深层 Thread 只按页面可可靠读取到的内容降级处理。
-
-二维码编码使用 MIT 许可的 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)，依赖版本和 SHA-256 完整性校验均固定在脚本 metadata 中。
-
-适用页面：
-
-- `https://x.com/*`
-- `https://twitter.com/*`
-
 ### Make X Great Again（跨平台 userscript）
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js)
@@ -73,7 +46,10 @@ https://reading-notes-sync.1109.workers.dev
 
 - 定期同步 MXGA 公共名单与官方白名单，匹配全程在本机完成。
 - 在 X 首页、搜索、状态页、评论区和个人主页显示名单徽标。
-- 在 X 原生分享菜单中增加“生成分享图”，支持作者、正文、配图、视频封面、引用/回复、原文二维码以及复制/下载 PNG。
+- 在 X 原生分享菜单中增加“生成分享图”，将作者、正文、发布时间和最多 4 张配图排版成独立卡片。
+- 单图完整展示；多图使用 X 风格网格；视频保留页面可见封面和播放标；引用推文与对话页回复使用嵌套卡片。
+- 正文中的 @提及、#话题和完整链接使用 X 品牌蓝突出显示；海报底部包含原文链接和本地生成的二维码。
+- 在弹窗中预览并复制 PNG；浏览器拒绝图片剪贴板权限时可下载 PNG。
 - PC 支持悬停、键盘聚焦和点击；iPhone / iPad 使用点击与底部弹层。
 - 默认隐藏人工确认账号的列表项与推文，可在脚本面板临时关闭；自动收录条目仍只提示。
 - 可手动本地隐藏账号内容，5 秒内撤销，也可从脚本面板恢复；手动隐藏记录不受自动隐藏开关影响。
@@ -87,7 +63,10 @@ https://reading-notes-sync.1109.workers.dev
 - 分享图只读取页面已展示的推文内容；图片通过 `pbs.twimg.com` 在本地加载并在 Canvas 中生成，不上传推文数据。
 - 只作用于 PC / iOS 浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
 - 请勿与原版 MXGA 浏览器扩展同时启用，以免出现重复徽标和两套隐藏记录。
-- MXGA 已内置分享卡片；无需同时启用上面的独立兼容版。若两者都为新版本，页面级保护也只会启动一份分享卡片运行时。
+
+分享图当前优先支持普通文字、图片、视频、引用推文和对话页回复；投票和更深层 Thread 只按页面可可靠读取到的内容降级处理。二维码编码使用 MIT 许可的 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)，依赖版本和 SHA-256 完整性校验固定在脚本 metadata 中。
+
+独立的 `X Tweet Share Card` 脚本已经停止发布。此前安装过它的用户需要在 Tampermonkey / Userscripts 中手动停用或删除；仓库更新无法远程卸载浏览器里已有的脚本副本。
 
 PC 安装：
 
@@ -104,7 +83,7 @@ iOS / iPadOS 安装：
 4. 粘贴上面的 raw 安装链接，保存并启用脚本。
 5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
 
-兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片合并部分沿用独立版的纯逻辑回归测试，但合并后的 Raw 文件仍需补一次真实浏览器验收。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
+兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片模块有聚焦的纯逻辑回归测试，但合并后的 Raw 文件仍需补一次真实浏览器验收。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
 
 ### M-Team 种子列表增强
 

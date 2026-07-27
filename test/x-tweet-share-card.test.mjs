@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const core = require('../scripts/x-tweet-share-card.user.js');
-const scriptText = readFileSync(new URL('../scripts/x-tweet-share-card.user.js', import.meta.url), 'utf8');
+const core = require('../scripts/make-x-great-again.user.js');
+const scriptText = readFileSync(new URL('../scripts/make-x-great-again.user.js', import.meta.url), 'utf8');
 
 test('normalizes extracted tweet data into a stable share-card model', () => {
   const tweet = core.normalizeTweetData({
@@ -774,7 +774,7 @@ test('hides the loading layer after the generated preview becomes ready', () => 
   assert.match(scriptText, /\.loading\[hidden\]\{display:none\}/);
 });
 
-test('standalone compatibility script claims one shared runtime per page', () => {
+test('MXGA claims one share-card runtime per page', () => {
   assert.match(scriptText, /hasAttribute\('data-tsc-runtime-mounted'\)/);
   assert.match(scriptText, /setAttribute\('data-tsc-runtime-mounted', ''\)/);
 });

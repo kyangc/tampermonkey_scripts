@@ -84,7 +84,7 @@ iOS / iPadOS 安装：
 4. 粘贴上面的 raw 安装链接，保存并启用脚本。
 5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
 
-兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片模块有聚焦的纯逻辑回归测试，但合并后的 Raw 文件仍需补一次真实浏览器验收。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
+兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片模块有聚焦的纯逻辑回归测试，并已在真实 Chromium 内核的合成 X DOM 中验证菜单去重、预览、长图像素预算与任务取消；当前版本仍需补官方 Tampermonkey Raw + 真实 `x.com` 页面验收，证据边界和清单见 [MXGA 浏览器运行时与发布验收](docs/mxga-browser-acceptance.md)。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
 
 ### M-Team 种子列表增强
 

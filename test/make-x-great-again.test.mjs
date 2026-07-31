@@ -154,6 +154,44 @@ test('panel backdrop clicks are consumed so they close without reaching the page
   assert.equal(core.consumeBackdropClick({ target: {} }, backdrop), false);
 });
 
+test('mutation scan collection keeps only the affected account content roots', () => {
+  const existingArticle = { id: 'existing-article' };
+  const addedArticle = {
+    id: 'added-article',
+    closest: () => null,
+    matches: (selector) => selector.includes('article'),
+    querySelectorAll: () => [],
+  };
+  const changedLeaf = {
+    closest: () => existingArticle,
+  };
+  const addedContainer = {
+    closest: () => null,
+    matches: () => false,
+    querySelectorAll: () => [addedArticle],
+  };
+
+  const items = core.collectMutationScanItems([
+    {
+      target: changedLeaf,
+      addedNodes: [addedContainer],
+    },
+  ]);
+
+  assert.deepEqual(items, [existingArticle, addedArticle]);
+});
+
+test('the MXGA runtime mount can only be claimed once per page', () => {
+  const attributes = new Set();
+  const root = {
+    hasAttribute: (name) => attributes.has(name),
+    setAttribute: (name) => attributes.add(name),
+  };
+
+  assert.equal(core.claimRuntimeMount(root), true);
+  assert.equal(core.claimRuntimeMount(root), false);
+});
+
 test('list sync refreshes the whitelist but skips the large artifact when the version is unchanged', async () => {
   const values = new Map([
     ['mxga:list-meta:v1', { version: 'v-current', fetchedAt: 1, count: 1200 }],

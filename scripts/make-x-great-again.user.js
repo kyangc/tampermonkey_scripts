@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.2
+// @version      0.2.3
 // @description  Mark public-list spam accounts and generate share cards on X across PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -64,6 +64,9 @@
   const MAX_META_BYTES = 64 * 1024;
   const SERVICE_BASE = 'https://x.zuoluo.tv';
   const ARTIFACT_PATH_RE = /^\/v1\/artifacts\/[A-Za-z0-9._-]+$/;
+  const ACCOUNT_CONTENT_SELECTOR =
+    'article[data-testid="tweet"], [data-testid="UserCell"]';
+  const RUNTIME_MOUNT_ATTRIBUTE = 'data-mxga-userscript-runtime-mounted';
   const STORAGE_KEYS = {
     listCache: 'mxga:list-cache:v2',
     listMeta: 'mxga:list-meta:v1',
@@ -390,6 +393,37 @@
     return true;
   }
 
+  function collectMutationScanItems(records) {
+    const items = new Set();
+    const addClosest = (node) => {
+      const item = node?.closest?.(ACCOUNT_CONTENT_SELECTOR);
+      if (item) items.add(item);
+    };
+    const addInsertedRoot = (node) => {
+      if (!node) return;
+      if (node.matches?.(ACCOUNT_CONTENT_SELECTOR)) items.add(node);
+      else addClosest(node);
+      for (const item of node.querySelectorAll?.(ACCOUNT_CONTENT_SELECTOR) || []) {
+        items.add(item);
+      }
+    };
+
+    for (const record of Array.from(records || [])) {
+      addClosest(record?.target);
+      for (const node of Array.from(record?.addedNodes || [])) addInsertedRoot(node);
+    }
+    return [...items];
+  }
+
+  function claimRuntimeMount(root) {
+    if (!root || typeof root.hasAttribute !== 'function' || typeof root.setAttribute !== 'function') {
+      return false;
+    }
+    if (root.hasAttribute(RUNTIME_MOUNT_ATTRIBUTE)) return false;
+    root.setAttribute(RUNTIME_MOUNT_ATTRIBUTE, '');
+    return true;
+  }
+
   function createAccountIndex(entries, whitelistEntries = []) {
     const rows = Array.isArray(entries) ? entries : [];
     for (const row of rows) {
@@ -580,6 +614,8 @@
   }
 
   const core = {
+    claimRuntimeMount,
+    collectMutationScanItems,
     consumeBackdropClick,
     createAccountIndex,
     createHiddenRegistry,
@@ -603,6 +639,9 @@
     module.exports = core;
     return;
   }
+
+  const runtimeRoot = global.document?.documentElement;
+  if (!claimRuntimeMount(runtimeRoot)) return;
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -1111,9 +1150,6 @@
     return null;
   }
 
-  const ACCOUNT_CONTENT_SELECTOR =
-    'article[data-testid="tweet"], [data-testid="UserCell"]';
-
   function cellForContent(item) {
     const cell = item.closest('[data-testid="cellInnerDiv"]') || item;
     return cell instanceof HTMLElement ? cell : null;
@@ -1249,6 +1285,8 @@
 
   function createScanner(state, ui) {
     let scheduled = false;
+    let fullScanRequested = true;
+    const pendingItems = new Set();
 
     function processContentItem(item) {
       const nameBlock = item.querySelector('[data-testid="User-Name"]');
@@ -1291,17 +1329,30 @@
     function scan() {
       scheduled = false;
       if (!state.settings.enabled) {
+        pendingItems.clear();
+        fullScanRequested = false;
         clearBadgeMounts();
         revealAllUserscriptHidden();
         return;
       }
-      for (const item of document.querySelectorAll(ACCOUNT_CONTENT_SELECTOR)) {
+      const items = fullScanRequested
+        ? document.querySelectorAll(ACCOUNT_CONTENT_SELECTOR)
+        : [...pendingItems];
+      fullScanRequested = false;
+      pendingItems.clear();
+      for (const item of items) {
+        if (!item?.isConnected) continue;
         processContentItem(item);
       }
       processProfile();
     }
 
-    function schedule() {
+    function schedule(records) {
+      if (Array.isArray(records)) {
+        for (const item of collectMutationScanItems(records)) pendingItems.add(item);
+      } else {
+        fullScanRequested = true;
+      }
       if (scheduled) return;
       scheduled = true;
       global.setTimeout(scan, 80);
@@ -1562,7 +1613,9 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') void reloadStoredState();
     });
-    global.setInterval(scanner.schedule, 2500);
+    global.setInterval(() => {
+      if (document.visibilityState === 'visible') scanner.schedule();
+    }, 15000);
 
     const fetchedAt = Number(state.meta?.fetchedAt || 0);
     if (state.index.size === 0 || !fetchedAt || Date.now() - fetchedAt > LIST_STALE_MS) {
@@ -1571,6 +1624,7 @@
   }
 
   void bootstrap().catch((error) => {
+    runtimeRoot?.removeAttribute?.(RUNTIME_MOUNT_ATTRIBUTE);
     console.error('[MXGA Userscript] startup failed', error);
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

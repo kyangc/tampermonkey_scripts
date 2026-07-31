@@ -1,10 +1,15 @@
 const API_VERSION = 1;
+const SERVICE_VERSION = '0.4.0';
 const PAIRING_TTL_SECONDS = 5 * 60;
 const MAX_MUTATIONS = 100;
 const MAX_CHANGES = 500;
 const MAX_CIPHERTEXT_LENGTH = 128 * 1024;
+const MAX_PAIRING_BODY_BYTES = 16 * 1024;
+const MAX_SMALL_BODY_BYTES = 4 * 1024;
+const MAX_SYNC_BODY_BYTES = 14 * 1024 * 1024;
 const ID_PATTERN = /^[A-Za-z0-9:_-]{8,160}$/;
 const HASH_PATTERN = /^[A-Za-z0-9_-]{40,64}$/;
+const PUBLIC_KEY_COORDINATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 function corsHeaders() {
   return {
@@ -24,9 +29,12 @@ function corsHeaders() {
   };
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
-    headers: corsHeaders(),
+    headers: {
+      ...corsHeaders(),
+      ...extraHeaders,
+    },
     status,
   });
 }
@@ -94,14 +102,47 @@ function nowSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = MAX_SMALL_BODY_BYTES) {
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/json')) {
     throw apiError(415, 'invalid_content_type', '请求必须使用 application/json。');
   }
 
+  const declaredLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw apiError(413, 'request_too_large', '请求正文超过大小限制。');
+  }
+
+  let source = '';
   try {
-    const value = await request.json();
+    if (request.body?.getReader) {
+      const reader = request.body.getReader();
+      const decoder = new TextDecoder();
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw apiError(413, 'request_too_large', '请求正文超过大小限制。');
+        }
+        source += decoder.decode(value, { stream: true });
+      }
+      source += decoder.decode();
+    } else {
+      source = await request.text();
+    }
+  } catch (_error) {
+    if (_error?.code === 'request_too_large') throw _error;
+    throw apiError(400, 'invalid_json', '请求正文不是有效的 JSON 对象。');
+  }
+  if (new TextEncoder().encode(source).byteLength > maxBytes) {
+    throw apiError(413, 'request_too_large', '请求正文超过大小限制。');
+  }
+
+  try {
+    const value = JSON.parse(source);
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('not an object');
     }
@@ -156,7 +197,13 @@ function parsePublicKey(value) {
     throw apiError(400, 'invalid_public_key', '设备公钥格式不正确。');
   }
   const jsonValue = JSON.stringify(value);
-  if (jsonValue.length > 4096 || value.kty !== 'EC' || value.crv !== 'P-256') {
+  if (
+    jsonValue.length > 4096
+    || value.kty !== 'EC'
+    || value.crv !== 'P-256'
+    || !PUBLIC_KEY_COORDINATE_PATTERN.test(value.x)
+    || !PUBLIC_KEY_COORDINATE_PATTERN.test(value.y)
+  ) {
     throw apiError(400, 'invalid_public_key', '只接受 P-256 ECDH 公钥。');
   }
   return jsonValue;
@@ -175,6 +222,7 @@ function parseKeyEnvelope(value) {
   ) {
     throw apiError(400, 'invalid_envelope', '密钥包格式不正确。');
   }
+  parsePublicKey(value.ephemeralPublicKey);
   return serialized;
 }
 
@@ -184,7 +232,7 @@ async function handleBootstrap(request, env) {
     throw apiError(401, 'unauthorized', '初始化凭证无效。');
   }
 
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_SMALL_BODY_BYTES);
   const libraryId = assertId(body.libraryId, 'libraryId');
   const deviceId = assertId(body.deviceId, 'deviceId');
   const deviceName = cleanText(body.deviceName, 80);
@@ -236,8 +284,18 @@ async function handleCreatePairing(request, env) {
   }, 201);
 }
 
+async function enforcePairingClaimRateLimit(env) {
+  if (typeof env.PAIRING_RATE_LIMITER?.limit !== 'function') return;
+  const result = await env.PAIRING_RATE_LIMITER.limit({
+    key: '/v1/pair/claim',
+  });
+  if (!result?.success) {
+    throw apiError(429, 'rate_limited', '配对尝试过于频繁，请稍后再试。');
+  }
+}
+
 async function handleClaimPairing(request, env) {
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_PAIRING_BODY_BYTES);
   const code = cleanText(body.code, 32).toUpperCase();
   const deviceId = assertId(body.deviceId, 'deviceId');
   const deviceName = cleanText(body.deviceName, 80);
@@ -319,7 +377,7 @@ async function handlePairingRequest(request, env, url) {
 
 async function handleApprovePairing(request, env) {
   const auth = await authenticateDevice(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_PAIRING_BODY_BYTES);
   const pairId = assertId(body.pairId, 'pairId');
   const keyEnvelope = parseKeyEnvelope(body.keyEnvelope);
   const pairing = await env.DB.prepare(`
@@ -495,7 +553,7 @@ function recordPayload(row) {
 
 async function handleSync(request, env) {
   const auth = await authenticateDevice(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_SYNC_BODY_BYTES);
   const since = Number(body.since || 0);
   if (!Number.isSafeInteger(since) || since < 0) {
     throw apiError(400, 'invalid_cursor', '同步游标格式不正确。');
@@ -602,7 +660,7 @@ async function handleListDevices(request, env) {
 
 async function handleRevokeDevice(request, env) {
   const auth = await authenticateDevice(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_SMALL_BODY_BYTES);
   const deviceId = assertId(body.deviceId, 'deviceId');
   if (deviceId === auth.deviceId) {
     throw apiError(400, 'cannot_revoke_self', '不能从当前设备撤销自己。');
@@ -628,7 +686,16 @@ async function route(request, env) {
     return new Response(null, { headers: corsHeaders(), status: 204 });
   }
   if (request.method === 'GET' && path === '/health') {
-    return json({ apiVersion: API_VERSION, ok: true });
+    return json({
+      apiVersion: API_VERSION,
+      deployment: {
+        id: env.CF_VERSION_METADATA?.id || null,
+        tag: env.CF_VERSION_METADATA?.tag || null,
+        timestamp: env.CF_VERSION_METADATA?.timestamp || null,
+      },
+      ok: true,
+      serviceVersion: SERVICE_VERSION,
+    });
   }
   if (request.method === 'POST' && path === '/v1/bootstrap') {
     return handleBootstrap(request, env);
@@ -637,6 +704,7 @@ async function route(request, env) {
     return handleCreatePairing(request, env);
   }
   if (request.method === 'POST' && path === '/v1/pair/claim') {
+    await enforcePairingClaimRateLimit(env);
     return handleClaimPairing(request, env);
   }
   if (request.method === 'GET' && path === '/v1/pair/request') {
@@ -679,7 +747,7 @@ export default {
           details: error?.details,
           message: status >= 500 ? '服务暂时不可用。' : error.message,
         },
-      }, status);
+      }, status, status === 429 ? { 'retry-after': '60' } : undefined);
     }
   },
 };

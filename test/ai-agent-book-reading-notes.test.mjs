@@ -4,9 +4,13 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const core = require('../scripts/ai-agent-book-reading-notes.user.js');
+const core = require('../src/userscripts/ai-agent-book-reading-notes.core.js');
 const userscriptSource = readFileSync(
   new URL('../scripts/ai-agent-book-reading-notes.user.js', import.meta.url),
+  'utf8',
+);
+const runtimeSource = readFileSync(
+  new URL('../src/userscripts/ai-agent-book-reading-notes.entry.js', import.meta.url),
   'utf8',
 );
 const userStyleSource = readFileSync(
@@ -75,6 +79,19 @@ test('boots at document-start and keeps late page lifecycle recovery hooks', () 
   assert.match(userscriptSource, /document\.fonts\.ready\.then/);
 });
 
+test('browser runtime only imports names exposed by the deep core module', () => {
+  const importBlock = runtimeSource.match(/const \{([\s\S]*?)\}\s*=\s*core;/)?.[1];
+  assert.ok(importBlock);
+  const importedNames = importBlock
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (const name of importedNames) {
+    assert.ok(name in core, `core export is missing: ${name}`);
+  }
+});
+
 test('builds a text quote and position anchor with bounded context', () => {
   const text = '前文：Agent 的设计需要原则。后文继续。';
   const exact = 'Agent 的设计';
@@ -127,6 +144,19 @@ test('uses prefix and suffix context to disambiguate repeated quotes', () => {
 
   assert.equal(located.strategy, 'quote');
   assert.equal(located.start, changed.lastIndexOf('Agent'));
+  assert.equal(located.needsReview, false);
+});
+
+test('requires review when repeated exact quotes lose their saved context', () => {
+  const original = '甲上下文 Agent 原位置 乙上下文';
+  const start = original.indexOf('Agent');
+  const anchor = core.buildTextAnchor(original, start, start + 'Agent'.length, 4);
+  const changed = '新段 Agent 无关内容。另一段 Agent 也无关。';
+  const located = core.locateTextAnchor(changed, anchor);
+
+  assert.equal(located.strategy, 'quote');
+  assert.equal(located.confidence, 0.35);
+  assert.equal(located.needsReview, true);
 });
 
 test('returns null when the selected quote no longer exists', () => {
@@ -272,6 +302,28 @@ test('assigns a shared text boundary to the following node for range starts', ()
   assert.equal(core.findTextOffsetPoint(nodes, 8, 'end'), newline);
 });
 
+test('exports structural block normalization for the browser runtime boundary', () => {
+  assert.deepEqual(core.normalizeBlockAnchor({
+    end: 30,
+    headingPath: ['引言'],
+    index: 1,
+    selectionEnd: 18,
+    selectionStart: 2,
+    start: 10,
+    tag: 'P',
+    text: 'Agent 的设计需要原则。',
+  }), {
+    end: 30,
+    headingPath: ['引言'],
+    index: 1,
+    selectionEnd: 18,
+    selectionStart: 2,
+    start: 10,
+    tag: 'p',
+    text: 'Agent 的设计需要原则。',
+  });
+});
+
 test('normalizes, filters, and sorts stored annotations', () => {
   const later = annotation({
     anchor: {
@@ -359,6 +411,74 @@ test('escapes user text in HTML exports while keeping notes readable', () => {
   assert.match(output, /&lt;b&gt;我的观点&lt;\/b&gt;/);
 });
 
+test('round-trips editable annotations through a versioned portable backup', () => {
+  const source = [
+    annotation({
+      note: '这里强调的是原则。',
+      type: 'note',
+    }),
+  ];
+  const serialized = core.createPortableBackup(source, {
+    exportedAt: '2026-07-31T09:30:00.000Z',
+  });
+  const parsed = core.parsePortableBackup(serialized);
+
+  assert.match(serialized, /"format": "ai-agent-book-reading-notes"/);
+  assert.equal(parsed.annotations.length, 1);
+  assert.equal(parsed.annotations[0].note, '这里强调的是原则。');
+  assert.equal(parsed.annotations[0].anchor.exact, 'Agent 架构');
+  assert.equal(parsed.schemaVersion, 2);
+});
+
+test('merges portable backups without overwriting divergent local annotations', () => {
+  const current = annotation({
+    note: '本机版本',
+    type: 'note',
+  });
+  const imported = annotation({
+    note: '备份中的不同版本',
+    type: 'note',
+  });
+  const added = annotation({
+    id: 'annotation-2',
+    note: '备份中的新增记录',
+    type: 'note',
+  });
+  const result = core.mergePortableAnnotations(
+    [current],
+    [imported, added, current],
+    {
+      createId: () => 'annotation-import-conflict',
+    },
+  );
+
+  assert.deepEqual(
+    result.store.annotations.map((item) => item.id).sort(),
+    ['annotation-1', 'annotation-2', 'annotation-import-conflict'],
+  );
+  assert.equal(
+    result.store.annotations.find((item) => item.id === 'annotation-1').note,
+    '本机版本',
+  );
+  assert.equal(
+    result.store.annotations.find((item) => item.id === 'annotation-import-conflict')
+      .syncConflict,
+    true,
+  );
+  assert.deepEqual(
+    {
+      added: result.added,
+      conflicts: result.conflicts,
+      skipped: result.skipped,
+    },
+    {
+      added: 1,
+      conflicts: 1,
+      skipped: 1,
+    },
+  );
+});
+
 test('accepts HTTPS sync endpoints and local HTTP development only', () => {
   assert.equal(
     core.normalizeSyncEndpoint('https://notes.example.com/api/?debug=1#top'),
@@ -369,6 +489,80 @@ test('accepts HTTPS sync endpoints and local HTTP development only', () => {
     'http://localhost:8787',
   );
   assert.equal(core.normalizeSyncEndpoint('http://notes.example.com'), '');
+});
+
+test('derives a stable safety number that changes when the pairing key changes', async () => {
+  const publicKey = {
+    crv: 'P-256',
+    kty: 'EC',
+    x: 'joiner-public-key-x',
+    y: 'joiner-public-key-y',
+  };
+  const first = await core.createPairingSafetyNumber('pair_example_0001', publicKey);
+  const repeated = await core.createPairingSafetyNumber('pair_example_0001', {
+    y: publicKey.y,
+    x: publicKey.x,
+    kty: publicKey.kty,
+    crv: publicKey.crv,
+  });
+  const substituted = await core.createPairingSafetyNumber('pair_example_0001', {
+    ...publicKey,
+    x: 'attacker-public-key-x',
+  });
+
+  assert.match(first, /^[A-F0-9]{4}(?:-[A-F0-9]{4}){2}$/);
+  assert.equal(repeated, first);
+  assert.notEqual(substituted, first);
+});
+
+test('round-trips sync credentials through a passphrase-encrypted recovery kit', async () => {
+  const sync = core.normalizeSyncState({
+    cursor: 12,
+    deviceId: 'dev_recovery_0001',
+    deviceName: 'Recovery Mac',
+    deviceToken: 'device-token-that-must-stay-encrypted-0001',
+    endpoint: 'https://notes.example.com',
+    libraryId: 'lib_recovery_0001',
+    masterKey: 'library-master-key-that-must-stay-encrypted',
+    versions: {
+      'annotation-1': 4,
+    },
+  });
+  const bundle = await core.createEncryptedRecoveryKit(
+    sync,
+    'correct horse battery staple',
+  );
+  const recovered = await core.openEncryptedRecoveryKit(
+    bundle,
+    'correct horse battery staple',
+  );
+
+  assert.match(bundle, /"format": "ai-agent-book-reading-notes-recovery"/);
+  assert.doesNotMatch(bundle, /device-token-that-must-stay-encrypted/);
+  assert.doesNotMatch(bundle, /library-master-key-that-must-stay-encrypted/);
+  assert.equal(recovered.deviceId, sync.deviceId);
+  assert.equal(recovered.deviceToken, sync.deviceToken);
+  assert.equal(recovered.masterKey, sync.masterKey);
+  assert.equal(recovered.libraryId, sync.libraryId);
+});
+
+test('rejects a recovery kit opened with the wrong passphrase', async () => {
+  const bundle = await core.createEncryptedRecoveryKit(
+    core.normalizeSyncState({
+      deviceId: 'dev_recovery_0001',
+      deviceName: 'Recovery Mac',
+      deviceToken: 'device-token-that-must-stay-encrypted-0001',
+      endpoint: 'https://notes.example.com',
+      libraryId: 'lib_recovery_0001',
+      masterKey: 'library-master-key-that-must-stay-encrypted',
+    }),
+    'correct horse battery staple',
+  );
+
+  await assert.rejects(
+    core.openEncryptedRecoveryKit(bundle, 'wrong horse battery staple'),
+    /口令错误，或文件已经损坏/,
+  );
 });
 
 test('keeps a pending annotation on its known server base version', () => {
@@ -391,6 +585,91 @@ test('keeps a pending annotation on its known server base version', () => {
   assert.equal(first.baseVersion, 7);
   assert.equal(updated.baseVersion, 7);
   assert.equal(updated.snapshot.note, '刚刚补充的观点');
+});
+
+test('isolates an oversized annotation without blocking later sync mutations', () => {
+  const sync = core.normalizeSyncState({});
+  const oversized = core.prepareSyncMutation(sync, annotation({
+    note: 'a'.repeat(100_000),
+    type: 'note',
+  }));
+
+  assert.equal(oversized.queued, false);
+  assert.equal(oversized.issue.code, 'payload_too_large');
+  assert.equal(oversized.sync.pending.length, 0);
+  assert.deepEqual(
+    oversized.sync.blocked.map((item) => item.recordId),
+    ['annotation-1'],
+  );
+
+  const normal = core.prepareSyncMutation(oversized.sync, annotation({
+    id: 'annotation-2',
+    note: '这条批注仍应正常排队。',
+    type: 'note',
+  }), {
+    mutationId: 'mutation-normal-0002',
+  });
+
+  assert.equal(normal.queued, true);
+  assert.equal(normal.issue, null);
+  assert.deepEqual(
+    normal.sync.pending.map((item) => item.recordId),
+    ['annotation-2'],
+  );
+  assert.deepEqual(
+    normal.sync.blocked.map((item) => item.recordId),
+    ['annotation-1'],
+  );
+});
+
+test('moves legacy oversized pending mutations into the visible blocked list', () => {
+  const sync = core.normalizeSyncState({
+    pending: [{
+      baseVersion: 3,
+      deleted: false,
+      mutationId: 'mutation-legacy-large',
+      recordId: 'annotation-1',
+      snapshot: annotation({
+        note: '界'.repeat(50_000),
+        type: 'note',
+      }),
+    }],
+  });
+
+  assert.equal(sync.pending.length, 0);
+  assert.deepEqual(
+    sync.blocked.map((item) => ({
+      code: item.code,
+      recordId: item.recordId,
+    })),
+    [{
+      code: 'payload_too_large',
+      recordId: 'annotation-1',
+    }],
+  );
+});
+
+test('reports a capped sync run as partial until remote and local queues are drained', () => {
+  assert.deepEqual(core.classifySyncCompletion({
+    hasMore: true,
+    maxRounds: 30,
+    pendingCount: 0,
+    rounds: 30,
+  }), {
+    complete: false,
+    reachedRoundLimit: true,
+    shouldContinue: true,
+  });
+  assert.deepEqual(core.classifySyncCompletion({
+    hasMore: false,
+    maxRounds: 30,
+    pendingCount: 0,
+    rounds: 2,
+  }), {
+    complete: true,
+    reachedRoundLimit: false,
+    shouldContinue: false,
+  });
 });
 
 test('normalizes sync state without retaining malformed pending mutations', () => {
@@ -435,4 +714,19 @@ test('gives sync settings a dedicated full-height drawer view', () => {
     userscriptSource,
     /#drawer\.sync-open \.drawer-footer\s*\{\s*grid-template-columns:\s*1fr;/,
   );
+});
+
+test('keeps keyboard focus inside dialogs and restores it when they close', () => {
+  assert.match(
+    userscriptSource,
+    /<aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"/,
+  );
+  assert.match(
+    userscriptSource,
+    /<form id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"/,
+  );
+  assert.match(userscriptSource, /function trapDialogFocus\(event, container\)/);
+  assert.match(userscriptSource, /shadow\.addEventListener\('keydown', handleShadowKeydown\)/);
+  assert.match(userscriptSource, /restoreFocus\(state\.focusReturn\.drawer\)/);
+  assert.match(userscriptSource, /aria-label="批注内容"/);
 });

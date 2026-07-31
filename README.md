@@ -20,7 +20,9 @@
 - 在右下角的读书笔记面板中按本页或全书查看、定位、编辑和删除记录。
 - 默认只保存在 Tampermonkey 本地；也可连接自建的 Cloudflare Worker + D1，在不同设备间增量同步。
 - 云同步采用设备独立凭证和 AES-GCM 端到端加密；Worker 与 D1 只接触密文。
-- 新设备必须通过可信设备生成的五分钟一次性配对码加入，可在同步设置中单独撤销。
+- 新设备必须通过可信设备生成的五分钟一次性配对码加入；两端还会显示同一组公钥安全码，可信设备核对一致后才批准。
+- 超过单条同步上限的批注仍会安全保留在本机，并在面板中明确提示，不会阻塞其他记录。
+- 可导出版本化 JSON 便携备份并合并恢复；同步密钥和设备凭据可另存为带独立口令的加密恢复包。
 - 可按全书章节顺序导出为 Markdown 或独立 HTML 网页。
 
 适用页面：
@@ -29,6 +31,8 @@
 - `https://bojieli.github.io/ai-agent-book/book/*`
 
 云同步后端位于 [`services/reading-notes-sync`](services/reading-notes-sync)，部署步骤和安全边界见其中的 [README](services/reading-notes-sync/README.md)。未配置同步服务时，脚本不会发出任何笔记网络请求。
+
+开发时请修改 `src/userscripts/ai-agent-book-reading-notes.*.js`，再运行 `npm run build:userscripts`；`scripts/` 下的安装文件是构建产物。
 
 当前个人同步服务地址：
 

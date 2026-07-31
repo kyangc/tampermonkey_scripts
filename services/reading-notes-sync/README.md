@@ -58,6 +58,10 @@ npx wrangler dev
 
 The default local endpoint is `http://localhost:8787`.
 
+`GET /health` returns the API version, service version, and Cloudflare Worker
+version metadata. Use its deployment ID to confirm which Worker version is
+actually serving production traffic after a deploy.
+
 ## Trust model
 
 - A one-time Worker secret authorizes the first device.
@@ -67,6 +71,27 @@ The default local endpoint is `http://localhost:8787`.
   device.
 - The trusted device encrypts the library key to the new device's ephemeral
   P-256 ECDH key. The Worker only relays the encrypted envelope.
+- Both devices independently derive a short safety number from the invitation
+  and the joining device's public key. The trusted device requires the number
+  shown on the joining device before approval, so a relaying service cannot
+  silently substitute another public key.
 - Annotation payloads are encrypted by AES-GCM in the userscript.
 - Revocation prevents future sync, but cannot erase notes already downloaded
   to an offline device.
+
+## Recovery and operational limits
+
+- A portable JSON backup contains annotations only and is safe to merge into an
+  existing local library. Divergent records with the same ID are retained as
+  conflict copies instead of overwriting local work.
+- An encrypted recovery kit contains the library key and the current device
+  credential. It is protected with PBKDF2-SHA-256 and AES-GCM using a
+  user-supplied passphrase of at least 12 characters.
+- Restoring a kit recreates the same device identity. Do not keep two active
+  browsers using one restored identity; pair a second active device normally so
+  it can be revoked independently.
+- Individual ciphertexts are capped at 128 KiB. Oversized annotations remain
+  local and do not block the rest of the sync queue.
+- Worker routes reject request bodies above their route-specific limits.
+  Unauthenticated pairing claims are limited to 30 attempts per minute per
+  Cloudflare location by the configured Rate Limiting binding.

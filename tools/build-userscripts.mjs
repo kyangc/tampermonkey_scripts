@@ -6,6 +6,14 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const bundles = [
   {
+    output: 'scripts/ai-agent-book-reading-notes.user.js',
+    sources: [
+      'src/userscripts/ai-agent-book-reading-notes.metadata.js',
+      'src/userscripts/ai-agent-book-reading-notes.core.js',
+      'src/userscripts/ai-agent-book-reading-notes.entry.js',
+    ],
+  },
+  {
     output: 'scripts/make-x-great-again.user.js',
     sources: [
       'src/userscripts/make-x-great-again.entry.js',

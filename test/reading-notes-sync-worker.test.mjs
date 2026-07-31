@@ -119,6 +119,22 @@ async function bootstrapEnvironment() {
   return { env, identity };
 }
 
+test('health response identifies the deployed Worker version', async () => {
+  const env = {
+    CF_VERSION_METADATA: {
+      id: 'worker-version-test-0001',
+      tag: 'test',
+      timestamp: '2026-07-31T00:00:00.000Z',
+    },
+    DB: new FakeD1(schema),
+  };
+  const response = await call(env, '/health');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.serviceVersion, '0.4.0');
+  assert.equal(response.body.deployment.id, env.CF_VERSION_METADATA.id);
+});
+
 test('bootstraps only one encrypted notes library', async () => {
   const { env, identity } = await bootstrapEnvironment();
   const repeated = await call(env, '/v1/bootstrap', {
@@ -217,8 +233,8 @@ test('pairs a new device, authenticates it independently, and supports revocatio
       publicKey: {
         crv: 'P-256',
         kty: 'EC',
-        x: 'public-x',
-        y: 'public-y',
+        x: 'A'.repeat(43),
+        y: 'B'.repeat(43),
       },
       tokenHash: await internals.sha256(secondToken),
     },
@@ -237,7 +253,12 @@ test('pairs a new device, authenticates it independently, and supports revocatio
     body: {
       keyEnvelope: {
         ciphertext: 'encrypted-library-key',
-        ephemeralPublicKey: { crv: 'P-256', kty: 'EC', x: 'x', y: 'y' },
+        ephemeralPublicKey: {
+          crv: 'P-256',
+          kty: 'EC',
+          x: 'C'.repeat(43),
+          y: 'D'.repeat(43),
+        },
         iv: 'envelope-iv',
       },
       pairId: invite.body.pairId,
@@ -280,4 +301,60 @@ test('pairs a new device, authenticates it independently, and supports revocatio
     headers: authHeaders(secondIdentity),
   });
   assert.equal(rejected.status, 401);
+});
+
+test('rejects oversized public request bodies before pairing work begins', async () => {
+  const env = {
+    BOOTSTRAP_TOKEN: 'bootstrap-secret-for-tests',
+    DB: new FakeD1(schema),
+  };
+  const response = await call(env, '/v1/pair/claim', {
+    body: {
+      padding: 'x'.repeat(20 * 1024),
+    },
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.body.error.code, 'request_too_large');
+});
+
+test('rejects malformed P-256 public-key coordinates', async () => {
+  const { env } = await bootstrapEnvironment();
+  const response = await call(env, '/v1/pair/claim', {
+    body: {
+      code: 'PAIR-CODE',
+      deviceId: 'dev_secondary_0002',
+      deviceName: 'iPad',
+      pairSecretHash: 'A'.repeat(43),
+      publicKey: {
+        crv: 'P-256',
+        kty: 'EC',
+        x: 'too-short',
+        y: 'B'.repeat(43),
+      },
+      tokenHash: 'C'.repeat(43),
+    },
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, 'invalid_public_key');
+});
+
+test('rate limits the unauthenticated pairing claim endpoint', async () => {
+  const env = {
+    BOOTSTRAP_TOKEN: 'bootstrap-secret-for-tests',
+    DB: new FakeD1(schema),
+    PAIRING_RATE_LIMITER: {
+      async limit({ key }) {
+        assert.equal(key, '/v1/pair/claim');
+        return { success: false };
+      },
+    },
+  };
+  const response = await call(env, '/v1/pair/claim', {
+    body: {},
+  });
+
+  assert.equal(response.status, 429);
+  assert.equal(response.body.error.code, 'rate_limited');
 });

@@ -52,7 +52,7 @@ https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/examp
 修改脚本：
 
 1. 先读目标脚本和对应测试。
-2. MXGA 与其内置 X 分享卡片模块的源码位于 `src/userscripts/`；修改后运行 `npm run build:userscripts` 生成 `scripts/` 下的发布文件。
+2. MXGA、AI Agent Book 读书笔记及其内置模块的源码位于 `src/userscripts/`；修改后运行 `npm run build:userscripts` 生成 `scripts/` 下的发布文件。
 3. 修改行为后提升对应入口的 `@version`。
 4. 更新或新增测试覆盖核心逻辑。
 5. 运行 `npm run check`。

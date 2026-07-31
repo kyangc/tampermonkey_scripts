@@ -17,6 +17,14 @@ function metadataValues(key) {
     .map((match) => match[1].trim());
 }
 
+function makeListEntries(count = 1000) {
+  return Array.from({ length: count }, (_, index) => [
+    String(index + 1),
+    `account${String(index).padStart(4, '0')}`,
+    'sph',
+  ]);
+}
+
 test('official whitelist wins over a blacklist match regardless of handle casing', () => {
   const index = core.createAccountIndex(
     [['1001', 'SpamAccount', 'pph']],
@@ -211,6 +219,127 @@ test('a corrupt list update never replaces the last known-good cache', async () 
   assert.equal(values.get('mxga:list-meta:v1'), oldMeta);
 });
 
+test('a failed cache commit keeps the previous list snapshot intact', async () => {
+  const oldRaw = JSON.stringify({
+    schema: 2,
+    version: 'v-old',
+    count: 1,
+    entries: [['1', 'OldAccount', 'sph']],
+  });
+  const oldSnapshot = {
+    schema: 1,
+    raw: oldRaw,
+    meta: { version: 'v-old', fetchedAt: 10, count: 1 },
+  };
+  const values = new Map([['mxga:list-cache:v2', oldSnapshot]]);
+  const entries = makeListEntries();
+  const artifactText = JSON.stringify({
+    schema: 2,
+    version: 'v-new',
+    count: entries.length,
+    entries,
+  });
+  const synchronizer = core.createListSynchronizer({
+    now: () => 2000,
+    requestText: async (url) => {
+      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
+      if (url.endsWith('/v1/list/meta')) {
+        return '{"version":"v-new","artifacts":{"lite":"/v1/artifacts/lite-v-new.json"}}';
+      }
+      return artifactText;
+    },
+    storage: {
+      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+      set: async (key, value) => {
+        if (key === 'mxga:list-cache:v2') throw new Error('simulated cache commit failure');
+        values.set(key, value);
+      },
+    },
+  });
+
+  const result = await synchronizer.sync(false);
+
+  assert.equal(result.updated, false);
+  assert.equal(result.error, 'simulated cache commit failure');
+  assert.deepEqual(values.get('mxga:list-cache:v2'), oldSnapshot);
+  assert.equal(values.has('mxga:list-raw:v1'), false);
+  assert.equal(values.has('mxga:list-meta:v1'), false);
+});
+
+test('the stored list reader loads one complete atomic snapshot', async () => {
+  const entries = makeListEntries();
+  const meta = { version: 'v-current', fetchedAt: 1234, count: entries.length };
+  const values = new Map([
+    ['mxga:list-cache:v2', {
+      schema: 1,
+      raw: JSON.stringify({
+        schema: 2,
+        version: meta.version,
+        count: entries.length,
+        entries,
+      }),
+      meta,
+    }],
+    ['mxga:whitelist:v1', {
+      entries: [['9', 'SafeAccount']],
+    }],
+  ]);
+
+  const result = await core.readStoredList({
+    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.entries.length, entries.length);
+  assert.deepEqual(result.entries[0], entries[0]);
+  assert.deepEqual(result.meta, meta);
+  assert.deepEqual(result.whitelistEntries, [['9', 'SafeAccount']]);
+});
+
+test('the stored list reader rejects a snapshot whose artifact and metadata versions differ', async () => {
+  const entries = makeListEntries();
+  const values = new Map([['mxga:list-cache:v2', {
+    schema: 1,
+    raw: JSON.stringify({
+      schema: 2,
+      version: 'v-artifact',
+      count: entries.length,
+      entries,
+    }),
+    meta: { version: 'v-metadata', fetchedAt: 1234, count: entries.length },
+  }]]);
+
+  const result = await core.readStoredList({
+    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+  });
+
+  assert.deepEqual(result.entries, []);
+  assert.equal(result.meta, null);
+  assert.equal(result.error, 'cached list version mismatch');
+});
+
+test('the stored list reader rejects a snapshot whose metadata count differs', async () => {
+  const entries = makeListEntries();
+  const values = new Map([['mxga:list-cache:v2', {
+    schema: 1,
+    raw: JSON.stringify({
+      schema: 2,
+      version: 'v-current',
+      count: entries.length,
+      entries,
+    }),
+    meta: { version: 'v-current', fetchedAt: 1234, count: entries.length - 1 },
+  }]]);
+
+  const result = await core.readStoredList({
+    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+  });
+
+  assert.deepEqual(result.entries, []);
+  assert.equal(result.meta, null);
+  assert.equal(result.error, 'cached list count mismatch');
+});
+
 test('GM request object rejections become a readable network error', async () => {
   const requestText = core.createRequestAdapter({
     xmlHttpRequest: async () => Promise.reject({ status: 0, statusText: '' }),
@@ -250,11 +379,7 @@ test('GM request adapter performs a bodyless read-only request', async () => {
 
 test('a valid changed artifact is stored with a safe fallback version', async () => {
   const values = new Map();
-  const entries = Array.from({ length: 1000 }, (_, index) => [
-    String(index + 1),
-    `account${String(index).padStart(4, '0')}`,
-    'sph',
-  ]);
+  const entries = makeListEntries();
   const artifactText = JSON.stringify({ schema: 2, count: entries.length, entries });
   const synchronizer = core.createListSynchronizer({
     now: () => 3000,
@@ -275,12 +400,17 @@ test('a valid changed artifact is stored with a safe fallback version', async ()
 
   assert.equal(result.updated, true);
   assert.equal(result.version, 'n1000');
-  assert.equal(values.get('mxga:list-raw:v1'), artifactText);
-  assert.deepEqual(values.get('mxga:list-meta:v1'), {
-    version: 'n1000',
-    fetchedAt: 3000,
-    count: 1000,
+  assert.deepEqual(values.get('mxga:list-cache:v2'), {
+    schema: 1,
+    raw: artifactText,
+    meta: {
+      version: 'n1000',
+      fetchedAt: 3000,
+      count: 1000,
+    },
   });
+  assert.equal(values.has('mxga:list-raw:v1'), false);
+  assert.equal(values.has('mxga:list-meta:v1'), false);
 });
 
 test('local hidden accounts are case-insensitive, deduplicated, and reversible', () => {

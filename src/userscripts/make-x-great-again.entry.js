@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.0
+// @version      0.2.1
 // @description  Mark public-list spam accounts and generate share cards on X across PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -65,6 +65,7 @@
   const SERVICE_BASE = 'https://x.zuoluo.tv';
   const ARTIFACT_PATH_RE = /^\/v1\/artifacts\/[A-Za-z0-9._-]+$/;
   const STORAGE_KEYS = {
+    listCache: 'mxga:list-cache:v2',
     listMeta: 'mxga:list-meta:v1',
     listRaw: 'mxga:list-raw:v1',
     whitelist: 'mxga:whitelist:v1',
@@ -108,6 +109,30 @@
       return null;
     }
     return { version: value.version, fetchedAt, count };
+  }
+
+  function sanitizeStoredListCache(value) {
+    if (!value || value.schema !== 1 || typeof value.raw !== 'string' || !value.raw) return null;
+    const meta = sanitizeStoredListMeta(value.meta);
+    if (!meta) return null;
+    return { schema: 1, raw: value.raw, meta };
+  }
+
+  async function readStoredListSnapshot(storage) {
+    const cache = sanitizeStoredListCache(
+      await storage.get(STORAGE_KEYS.listCache, null),
+    );
+    if (cache) return { raw: cache.raw, meta: cache.meta, legacy: false };
+
+    const [raw, meta] = await Promise.all([
+      storage.get(STORAGE_KEYS.listRaw, ''),
+      storage.get(STORAGE_KEYS.listMeta, null),
+    ]);
+    return {
+      raw: typeof raw === 'string' ? raw : '',
+      meta: sanitizeStoredListMeta(meta),
+      legacy: true,
+    };
   }
 
   function validateLiteArtifact(raw) {
@@ -216,17 +241,15 @@
           };
         }
 
-        const storedMeta = sanitizeStoredListMeta(
-          await storage.get(STORAGE_KEYS.listMeta, null),
-        );
-        const storedRaw = await storage.get(STORAGE_KEYS.listRaw, '');
-        if (!force && storedMeta?.version && metaVersion === storedMeta.version && storedRaw) {
+        const stored = await readStoredListSnapshot(storage);
+        if (!force && stored.meta?.version && metaVersion === stored.meta.version && stored.raw) {
           return {
             updated: false,
-            version: storedMeta.version,
-            black: storedMeta.count,
+            version: stored.meta.version,
+            black: stored.meta.count,
             white,
             whitelistEntries: refreshedWhitelist?.entries,
+            meta: stored.meta,
           };
         }
 
@@ -254,8 +277,11 @@
           fetchedAt: now(),
           count: validated.value.entries.length,
         };
-        await storage.set(STORAGE_KEYS.listRaw, artifactText);
-        await storage.set(STORAGE_KEYS.listMeta, nextMeta);
+        await storage.set(STORAGE_KEYS.listCache, {
+          schema: 1,
+          raw: artifactText,
+          meta: nextMeta,
+        });
         return {
           updated: true,
           version: nextMeta.version,
@@ -263,6 +289,7 @@
           white,
           whitelistEntries: refreshedWhitelist?.entries,
           artifact: validated.value,
+          meta: nextMeta,
         };
       } catch (error) {
         return {
@@ -480,6 +507,78 @@
     return null;
   }
 
+  function sanitizeStoredWhitelist(value) {
+    const entries = [];
+    for (const row of Array.isArray(value?.entries) ? value.entries : []) {
+      if (Array.isArray(row) && row.length === 2 && validIdentity(row[0], row[1])) {
+        entries.push([row[0], row[1]]);
+      }
+    }
+    return entries;
+  }
+
+  async function readStoredList(storage) {
+    const [snapshot, whitelist] = await Promise.all([
+      readStoredListSnapshot(storage),
+      storage.get(STORAGE_KEYS.whitelist, null),
+    ]);
+    const { raw, meta: storedMeta } = snapshot;
+    const whitelistEntries = sanitizeStoredWhitelist(whitelist);
+    if (typeof raw !== 'string' || !raw) {
+      return { entries: [], meta: storedMeta, whitelistEntries, error: null };
+    }
+    try {
+      const validated = validateLiteArtifact(parseJson(raw, 'cached lite artifact'));
+      if (!validated.ok) {
+        return { entries: [], meta: storedMeta, whitelistEntries, error: validated.error };
+      }
+      if (
+        !snapshot.legacy &&
+        validated.value.version &&
+        validated.value.version !== storedMeta?.version
+      ) {
+        return {
+          entries: [],
+          meta: null,
+          whitelistEntries,
+          error: 'cached list version mismatch',
+        };
+      }
+      if (
+        !snapshot.legacy &&
+        validated.value.entries.length !== storedMeta?.count
+      ) {
+        return {
+          entries: [],
+          meta: null,
+          whitelistEntries,
+          error: 'cached list count mismatch',
+        };
+      }
+      if (validated.value.entries.length < MIN_SANE_ENTRIES) {
+        return {
+          entries: [],
+          meta: storedMeta,
+          whitelistEntries,
+          error: 'cached list is implausibly small',
+        };
+      }
+      return {
+        entries: validated.value.entries,
+        meta: storedMeta,
+        whitelistEntries,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        entries: [],
+        meta: storedMeta,
+        whitelistEntries,
+        error: errorMessage(error, '缓存读取失败'),
+      };
+    }
+  }
+
   const core = {
     consumeBackdropClick,
     createAccountIndex,
@@ -494,6 +593,7 @@
     getAccountVisibility,
     normalizeSettings,
     normalizeHandle,
+    readStoredList,
     STORAGE_KEYS,
     validateLiteArtifact,
     validateWhitelist,
@@ -624,56 +724,6 @@
       // Fall through to window.open.
     }
     global.open(url, '_blank', 'noopener,noreferrer');
-  }
-
-  function sanitizeStoredWhitelist(value) {
-    const entries = [];
-    for (const row of Array.isArray(value?.entries) ? value.entries : []) {
-      if (Array.isArray(row) && row.length === 2 && validIdentity(row[0], row[1])) {
-        entries.push([row[0], row[1]]);
-      }
-    }
-    return entries;
-  }
-
-  async function readStoredList(storage) {
-    const [raw, meta, whitelist] = await Promise.all([
-      storage.get(STORAGE_KEYS.listRaw, ''),
-      storage.get(STORAGE_KEYS.listMeta, null),
-      storage.get(STORAGE_KEYS.whitelist, null),
-    ]);
-    const whitelistEntries = sanitizeStoredWhitelist(whitelist);
-    const storedMeta = sanitizeStoredListMeta(meta);
-    if (typeof raw !== 'string' || !raw) {
-      return { entries: [], meta: storedMeta, whitelistEntries, error: null };
-    }
-    try {
-      const validated = validateLiteArtifact(parseJson(raw, 'cached lite artifact'));
-      if (!validated.ok) {
-        return { entries: [], meta: storedMeta, whitelistEntries, error: validated.error };
-      }
-      if (validated.value.entries.length < MIN_SANE_ENTRIES) {
-        return {
-          entries: [],
-          meta: storedMeta,
-          whitelistEntries,
-          error: 'cached list is implausibly small',
-        };
-      }
-      return {
-        entries: validated.value.entries,
-        meta: storedMeta,
-        whitelistEntries,
-        error: null,
-      };
-    } catch (error) {
-      return {
-        entries: [],
-        meta: storedMeta,
-        whitelistEntries,
-        error: errorMessage(error, '缓存读取失败'),
-      };
-    }
   }
 
   const UI_STYLE = [
@@ -1388,15 +1438,15 @@
     }
 
     async function reloadStoredState(options = {}) {
-      const [settings, hiddenRecords, storedMeta, storedWhitelist] = await Promise.all([
+      const [settings, hiddenRecords, storedSnapshot, storedWhitelist] = await Promise.all([
         storage.get(STORAGE_KEYS.settings, state.settings),
         storage.get(STORAGE_KEYS.hidden, state.hidden.list()),
-        storage.get(STORAGE_KEYS.listMeta, state.meta),
+        readStoredListSnapshot(storage),
         storage.get(STORAGE_KEYS.whitelist, null),
       ]);
       state.settings = normalizeSettings(settings);
       state.hidden = createHiddenRegistry(hiddenRecords);
-      const safeStoredMeta = sanitizeStoredListMeta(storedMeta);
+      const safeStoredMeta = storedSnapshot.meta;
       const nextWhitelist = sanitizeStoredWhitelist(storedWhitelist);
       const listChanged =
         options.forceList ||
@@ -1446,9 +1496,7 @@
             state.whitelistEntries = next.whitelistEntries;
           }
         }
-        state.meta =
-          sanitizeStoredListMeta(await storage.get(STORAGE_KEYS.listMeta, state.meta)) ||
-          state.meta;
+        state.meta = result.meta || state.meta;
         rebuildIndex();
         state.error = result.error || null;
       } catch (error) {

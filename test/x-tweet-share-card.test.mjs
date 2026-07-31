@@ -649,6 +649,94 @@ test('preserves the full aspect ratio of a single tall tweet image', () => {
   assert.equal(extreme.mediaRects[0].x, extreme.contentX);
 });
 
+test('bounds the physical canvas for an extreme tall-image layout', () => {
+  const measureText = (value) => Array.from(value).length * 42;
+  const layout = core.buildCardLayout(
+    { text: 'Tall image', mediaUrls: ['one'] },
+    measureText,
+    { singleMediaAspectRatio: 20 },
+  );
+
+  const renderSize = core.getCanvasRenderSize(layout.canvasWidth, layout.canvasHeight);
+
+  assert.equal(renderSize.limited, true);
+  assert.ok(renderSize.width <= 8192);
+  assert.ok(renderSize.height <= 8192);
+  assert.ok(renderSize.width * renderSize.height <= 8_000_000);
+  assert.ok(renderSize.scale < 1);
+});
+
+test('keeps an ordinary share-card canvas at its logical resolution', () => {
+  assert.deepEqual(core.getCanvasRenderSize(1200, 2400), {
+    width: 1200,
+    height: 2400,
+    scale: 1,
+    limited: false,
+  });
+});
+
+test('loads one tweet asset bundle with bounded decode concurrency', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const started = [];
+  const tweet = {
+    avatarUrl: 'avatar',
+    mediaUrls: ['one', 'two', 'three', 'four'],
+  };
+
+  const bundle = await core.loadTweetAssetBundle(tweet, {
+    concurrency: 2,
+    loadImage: async (url) => {
+      started.push(url);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return { image: { url }, revoke: null };
+    },
+  });
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(started, ['avatar', 'one', 'two', 'three', 'four']);
+  assert.equal(bundle.avatarAsset.image.url, 'avatar');
+  assert.deepEqual(bundle.mediaAssets.map((asset) => asset.image.url), [
+    'one',
+    'two',
+    'three',
+    'four',
+  ]);
+});
+
+test('stops an asset bundle when its render signal is aborted', async () => {
+  const controller = new AbortController();
+  let started = 0;
+  const loading = core.loadTweetAssetBundle(
+    {
+      avatarUrl: 'avatar',
+      mediaUrls: ['one', 'two', 'three', 'four'],
+    },
+    {
+      concurrency: 2,
+      signal: controller.signal,
+      loadImage: async (_url, options) => {
+        started += 1;
+        await new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      },
+    },
+  );
+
+  controller.abort();
+
+  await assert.rejects(loading, { name: 'AbortError' });
+  assert.equal(started, 2);
+});
+
 test('renders single images in full and gives every media cell a visible border', () => {
   assert.deepEqual(core.getMediaRenderConfig(1), {
     borderColor: '#cfd9df',

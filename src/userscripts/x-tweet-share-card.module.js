@@ -696,6 +696,35 @@
     };
   }
 
+  function getCanvasRenderSize(logicalWidth, logicalHeight, options = {}) {
+    const width = Number(logicalWidth);
+    const height = Number(logicalHeight);
+    if (!(width > 0) || !(height > 0)) {
+      throw new Error('invalid canvas layout size');
+    }
+    const maxPixels = Number(options.maxPixels) > 0
+      ? Number(options.maxPixels)
+      : 8_000_000;
+    const maxEdge = Number(options.maxEdge) > 0
+      ? Number(options.maxEdge)
+      : 8192;
+    const scaleLimit = Math.min(
+      1,
+      maxEdge / width,
+      maxEdge / height,
+      Math.sqrt(maxPixels / (width * height)),
+    );
+    const renderWidth = Math.max(1, Math.floor(width * scaleLimit));
+    const renderHeight = Math.max(1, Math.floor(height * scaleLimit));
+    const scale = Math.min(renderWidth / width, renderHeight / height);
+    return {
+      width: renderWidth,
+      height: renderHeight,
+      scale,
+      limited: scale < 1,
+    };
+  }
+
   function findShareMenuAnchor(menu) {
     if (!menu || typeof menu.querySelector !== 'function') return null;
     const testIdMatch = menu.querySelector('[data-testid="copyLinkToTweet"]')
@@ -844,6 +873,7 @@
     extractTweetData,
     extractVideoPosterUrl,
     findShareMenuAnchor,
+    getCanvasRenderSize,
     getMediaLayout,
     getMediaRenderConfig,
     getMediaTileRadii,
@@ -857,6 +887,7 @@
     getVideoPlayOverlayLayout,
     isTweetShareButton,
     isTweetShareMenu,
+    loadTweetAssetBundle,
     normalizeTweetData,
     wrapTweetTextRuns,
     wrapText,
@@ -882,6 +913,7 @@
     activeArticle: null,
     mountScheduled: false,
     modalClose: null,
+    renderAbort: null,
   };
 
   function installPageStyle() {
@@ -995,69 +1027,148 @@
     }
   }
 
-  function requestImageBlob(url) {
+  function requestImageBlob(url, options = {}) {
     const gmApi = typeof GM !== 'undefined' ? GM : global.GM;
     if (!gmApi || typeof gmApi.xmlHttpRequest !== 'function') {
       return Promise.reject(new Error('GM.xmlHttpRequest unavailable'));
     }
 
     return new Promise((resolve, reject) => {
-      gmApi.xmlHttpRequest({
-        method: 'GET',
-        url,
-        responseType: 'blob',
-        timeout: 20000,
-        anonymous: true,
-        onload: (response) => {
-          const blob = response && response.response;
-          if (response.status >= 200 && response.status < 300 && blob instanceof Blob) {
-            resolve(blob);
-          } else {
-            reject(new Error(`图片请求失败（HTTP ${response.status || 0}）`));
-          }
-        },
-        onerror: () => reject(new Error('图片请求失败')),
-        onabort: () => reject(new Error('图片请求已取消')),
-        ontimeout: () => reject(new Error('图片请求超时')),
-      });
+      let request = null;
+      let settled = false;
+      const signal = options.signal;
+      const cleanup = () => signal?.removeEventListener?.('abort', abort);
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback(value);
+      };
+      const abort = () => {
+        try {
+          request?.abort?.();
+        } catch (_error) {
+          // The abort signal still cancels this render job locally.
+        }
+        finish(reject, createAbortError());
+      };
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      signal?.addEventListener?.('abort', abort, { once: true });
+      try {
+        request = gmApi.xmlHttpRequest({
+          method: 'GET',
+          url,
+          responseType: 'blob',
+          timeout: 20000,
+          anonymous: true,
+          onload: (response) => {
+            const blob = response && response.response;
+            if (response.status >= 200 && response.status < 300 && blob instanceof Blob) {
+              finish(resolve, blob);
+            } else {
+              finish(reject, new Error(`图片请求失败（HTTP ${response.status || 0}）`));
+            }
+          },
+          onerror: () => finish(reject, new Error('图片请求失败')),
+          onabort: () => finish(reject, createAbortError()),
+          ontimeout: () => finish(reject, new Error('图片请求超时')),
+        });
+      } catch (error) {
+        finish(reject, error);
+      }
     });
   }
 
-  async function fetchImageBlob(url) {
+  async function fetchImageBlob(url, options = {}) {
     try {
-      return await requestImageBlob(url);
+      return await requestImageBlob(url, options);
     } catch (gmError) {
+      if (options.signal?.aborted || gmError?.name === 'AbortError') throw createAbortError();
       if (typeof global.fetch !== 'function') throw gmError;
-      const response = await global.fetch(url, { credentials: 'omit', mode: 'cors' });
+      const response = await global.fetch(url, {
+        credentials: 'omit',
+        mode: 'cors',
+        signal: options.signal,
+      });
       if (!response.ok) throw new Error(`图片请求失败（HTTP ${response.status}）`);
       return response.blob();
     }
   }
 
-  function decodeImageSource(src, revoke = null) {
+  function decodeImageSource(src, revoke = null, options = {}) {
     return new Promise((resolve, reject) => {
       const image = new global.Image();
+      const signal = options.signal;
+      let settled = false;
+      const cleanup = () => signal?.removeEventListener?.('abort', abort);
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        image.onload = null;
+        image.onerror = null;
+        callback(value);
+      };
+      const abort = () => {
+        finish(reject, createAbortError());
+        image.src = '';
+        if (revoke) revoke();
+      };
       image.decoding = 'async';
-      image.onload = () => resolve({ image, revoke });
+      image.onload = () => finish(resolve, { image, revoke });
       image.onerror = () => {
         if (revoke) revoke();
-        reject(new Error('图片解码失败'));
+        finish(reject, new Error('图片解码失败'));
       };
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      signal?.addEventListener?.('abort', abort, { once: true });
       image.src = src;
     });
   }
 
-  async function loadImageAsset(url) {
+  async function loadImageAsset(url, options = {}) {
     try {
-      const blob = await fetchImageBlob(url);
+      const blob = await fetchImageBlob(url, options);
+      throwIfAborted(options.signal);
       const objectUrl = global.URL.createObjectURL(blob);
-      return await decodeImageSource(objectUrl, () => global.URL.revokeObjectURL(objectUrl));
-    } catch (_error) {
+      return await decodeImageSource(
+        objectUrl,
+        () => global.URL.revokeObjectURL(objectUrl),
+        options,
+      );
+    } catch (error) {
+      if (options.signal?.aborted || error?.name === 'AbortError') throw createAbortError();
       const image = new global.Image();
       image.crossOrigin = 'anonymous';
       return new Promise((resolve, reject) => {
-        image.onload = () => resolve({ image, revoke: null });
-        image.onerror = () => reject(new Error('图片加载失败'));
+        const signal = options.signal;
+        let settled = false;
+        const cleanup = () => signal?.removeEventListener?.('abort', abort);
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          image.onload = null;
+          image.onerror = null;
+          callback(value);
+        };
+        const abort = () => {
+          finish(reject, createAbortError());
+          image.src = '';
+        };
+        image.onload = () => finish(resolve, { image, revoke: null });
+        image.onerror = () => finish(reject, new Error('图片加载失败'));
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        signal?.addEventListener?.('abort', abort, { once: true });
         image.src = url;
       });
     }
@@ -1208,10 +1319,55 @@
     context.restore();
   }
 
-  async function loadTweetAssetBundle(tweet) {
+  function createAbortError() {
+    const error = new Error('图片生成已取消');
+    error.name = 'AbortError';
+    return error;
+  }
+
+  function throwIfAborted(signal) {
+    if (signal?.aborted) throw createAbortError();
+  }
+
+  async function mapWithConcurrency(values, concurrency, mapper) {
+    const items = Array.from(values || []);
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    async function worker() {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(items[index], index);
+      }
+    }
+    const workerCount = Math.min(
+      items.length,
+      Math.max(1, Math.floor(Number(concurrency) || 1)),
+    );
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  }
+
+  async function loadTweetAssetBundle(tweet, options = {}) {
     if (!tweet) return { avatarAsset: null, mediaAssets: [], loaded: [] };
     const assetUrls = [tweet.avatarUrl, ...tweet.mediaUrls].filter(Boolean);
-    const loaded = await Promise.all(assetUrls.map((url) => loadImageAsset(url).catch(() => null)));
+    const loadImage = options.loadImage || loadImageAsset;
+    const loaded = await mapWithConcurrency(
+      assetUrls,
+      options.concurrency || 3,
+      async (url) => {
+        throwIfAborted(options.signal);
+        try {
+          const asset = await loadImage(url, { signal: options.signal });
+          options.onAsset?.(asset);
+          return asset;
+        } catch (error) {
+          if (options.signal?.aborted || error?.name === 'AbortError') throw createAbortError();
+          return null;
+        }
+      },
+    );
+    throwIfAborted(options.signal);
     let loadedIndex = 0;
     const avatarAsset = tweet.avatarUrl ? loaded[loadedIndex++] : null;
     const mediaAssets = tweet.mediaUrls.map(() => loaded[loadedIndex++] || null);
@@ -1378,42 +1534,51 @@
     context.restore();
   }
 
-  async function renderShareCard(rawTweet) {
+  async function renderShareCard(rawTweet, options = {}) {
     const tweet = normalizeTweetData(rawTweet);
     const measureCanvas = document.createElement('canvas');
     const measureContext = measureCanvas.getContext('2d');
-    const [primaryAssets, contextAssets] = await Promise.all([
-      loadTweetAssetBundle(tweet),
-      loadTweetAssetBundle(tweet.context?.tweet),
-    ]);
-    const singleMediaAspectRatio = getSingleMediaAspectRatio(primaryAssets.mediaAssets);
-    const contextSingleMediaAspectRatio = getSingleMediaAspectRatio(contextAssets.mediaAssets);
-    const layout = buildCardLayout(
-      tweet,
-      (text) => {
-        measureContext.font = `400 42px ${FONT_STACK}`;
-        return measureContext.measureText(text).width;
-      },
-      {
-        singleMediaAspectRatio,
-        contextSingleMediaAspectRatio,
-        contextMeasureText: (text) => {
-          measureContext.font = `400 32px ${FONT_STACK}`;
+    const loadedAssets = [];
+    const loadOptions = {
+      concurrency: 3,
+      signal: options.signal,
+      onAsset: (asset) => loadedAssets.push(asset),
+    };
+    try {
+      throwIfAborted(options.signal);
+      const primaryAssets = await loadTweetAssetBundle(tweet, loadOptions);
+      const contextAssets = await loadTweetAssetBundle(tweet.context?.tweet, loadOptions);
+      throwIfAborted(options.signal);
+      const singleMediaAspectRatio = getSingleMediaAspectRatio(primaryAssets.mediaAssets);
+      const contextSingleMediaAspectRatio = getSingleMediaAspectRatio(contextAssets.mediaAssets);
+      const layout = buildCardLayout(
+        tweet,
+        (text) => {
+          measureContext.font = `400 42px ${FONT_STACK}`;
           return measureContext.measureText(text).width;
         },
-      },
-    );
-    const qrMatrix = layout.sourceGuide
-      ? createQrMatrix(layout.sourceGuide.url)
-      : [];
-    const canvas = document.createElement('canvas');
-    canvas.width = layout.canvasWidth;
-    canvas.height = layout.canvasHeight;
-    const context = canvas.getContext('2d');
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = 'high';
+        {
+          singleMediaAspectRatio,
+          contextSingleMediaAspectRatio,
+          contextMeasureText: (text) => {
+            measureContext.font = `400 32px ${FONT_STACK}`;
+            return measureContext.measureText(text).width;
+          },
+        },
+      );
+      const qrMatrix = layout.sourceGuide
+        ? createQrMatrix(layout.sourceGuide.url)
+        : [];
+      const renderSize = getCanvasRenderSize(layout.canvasWidth, layout.canvasHeight);
+      const canvas = document.createElement('canvas');
+      canvas.width = renderSize.width;
+      canvas.height = renderSize.height;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.scale(renderSize.scale, renderSize.scale);
+      throwIfAborted(options.signal);
 
-    try {
       context.fillStyle = '#f4f7fb';
       context.fillRect(0, 0, layout.canvasWidth, layout.canvasHeight);
 
@@ -1503,11 +1668,11 @@
       context.fillText(formatPublishedAt(tweet.publishedAt), layout.contentX, layout.footerTop + 25);
 
       drawSourceGuide(context, layout.sourceGuide, qrMatrix);
+      throwIfAborted(options.signal);
+      return canvas;
     } finally {
-      for (const asset of [...primaryAssets.loaded, ...contextAssets.loaded]) asset?.revoke?.();
+      for (const asset of loadedAssets) asset?.revoke?.();
     }
-
-    return canvas;
   }
 
   function canvasToPngBlob(canvas) {
@@ -1551,7 +1716,7 @@
     ]);
   }
 
-  function createShareCardModal(tweet) {
+  function createShareCardModal(tweet, options = {}) {
     state.modalClose?.();
 
     const host = document.createElement('div');
@@ -1640,6 +1805,7 @@
       if (previewUrl) global.URL.revokeObjectURL(previewUrl);
       host.remove();
       if (state.modalClose === close) state.modalClose = null;
+      options.onClose?.();
     }
 
     function onKeyDown(event) {
@@ -1710,20 +1876,33 @@
 
   async function openShareCard(article) {
     document.dispatchEvent(new global.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    state.renderAbort?.abort();
+    const renderAbort = new global.AbortController();
+    state.renderAbort = renderAbort;
     const tweet = extractTweetData(article);
-    const modal = createShareCardModal(tweet);
+    const modal = createShareCardModal(tweet, {
+      onClose: () => renderAbort.abort(),
+    });
 
     if (!(tweet.authorName || tweet.handle) || !(tweet.text || tweet.mediaUrls.length)) {
       modal.setError('没有从当前推文读取到足够内容。X 可能刚更新了页面结构，请刷新后重试。');
+      renderAbort.abort();
+      if (state.renderAbort === renderAbort) state.renderAbort = null;
       return;
     }
 
     try {
-      const canvas = await renderShareCard(tweet);
+      const canvas = await renderShareCard(tweet, { signal: renderAbort.signal });
+      throwIfAborted(renderAbort.signal);
       const blob = await canvasToPngBlob(canvas);
+      throwIfAborted(renderAbort.signal);
       modal.setReady(blob);
     } catch (error) {
-      modal.setError(`生成分享图失败：${error?.message || '未知错误'}`);
+      if (error?.name !== 'AbortError') {
+        modal.setError(`生成分享图失败：${error?.message || '未知错误'}`);
+      }
+    } finally {
+      if (state.renderAbort === renderAbort) state.renderAbort = null;
     }
   }
 

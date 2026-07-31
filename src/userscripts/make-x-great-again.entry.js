@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.1
+// @version      0.2.2
 // @description  Mark public-list spam accounts and generate share cards on X across PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later

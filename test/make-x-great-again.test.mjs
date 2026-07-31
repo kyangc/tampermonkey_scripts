@@ -34,6 +34,25 @@ test('official whitelist wins over a blacklist match regardless of handle casing
   assert.equal(index.lookup({ handle: 'SPAMACCOUNT' }), null);
 });
 
+test('runtime matching does not treat an unobservable user ID as a whitelist guarantee', () => {
+  const index = core.createAccountIndex(
+    [['1001', 'RenamedSpam', 'sph']],
+    [['1001', 'PreviouslySafe']],
+  );
+
+  assert.equal(index.lookup({ userId: '1001', handle: 'renamedspam' })?.handle, 'renamedspam');
+  assert.equal(index.lookup({ handle: 'PREVIOUSLYSAFE' }), null);
+});
+
+test('list freshness is determined from the last successful list confirmation', () => {
+  const now = 10 * 60 * 60 * 1000;
+
+  assert.equal(core.isListStale(null, now), true);
+  assert.equal(core.isListStale({ fetchedAt: 0 }, now), true);
+  assert.equal(core.isListStale({ fetchedAt: now - core.LIST_STALE_MS + 1 }, now), false);
+  assert.equal(core.isListStale({ fetchedAt: now - core.LIST_STALE_MS }, now), true);
+});
+
 test('lite artifact entry validation rejects the whole update when any row is invalid', () => {
   const valid = core.validateLiteArtifact({
     schema: 2,
@@ -193,9 +212,19 @@ test('the MXGA runtime mount can only be claimed once per page', () => {
 });
 
 test('list sync refreshes the whitelist but skips the large artifact when the version is unchanged', async () => {
+  const entries = makeListEntries();
+  const raw = JSON.stringify({
+    schema: 2,
+    version: 'v-current',
+    count: entries.length,
+    entries,
+  });
   const values = new Map([
-    ['mxga:list-meta:v1', { version: 'v-current', fetchedAt: 1, count: 1200 }],
-    ['mxga:list-raw:v1', '{"schema":2,"entries":[]}'],
+    ['mxga:list-cache:v2', {
+      schema: 1,
+      raw,
+      meta: { version: 'v-current', fetchedAt: 1, count: entries.length },
+    }],
   ]);
   const requests = [];
   const responses = new Map([
@@ -225,6 +254,50 @@ test('list sync refreshes the whitelist but skips the large artifact when the ve
   ]);
   assert.equal(result.updated, false);
   assert.deepEqual(values.get('mxga:whitelist:v1').entries, [['9', 'Safe']]);
+  assert.deepEqual(values.get('mxga:list-cache:v2'), {
+    schema: 1,
+    raw,
+    meta: { version: 'v-current', fetchedAt: 1000, count: entries.length },
+  });
+});
+
+test('unchanged metadata still redownloads when the cached artifact is invalid', async () => {
+  const entries = makeListEntries();
+  const artifactText = JSON.stringify({
+    schema: 2,
+    version: 'v-current',
+    count: entries.length,
+    entries,
+  });
+  const values = new Map([
+    ['mxga:list-cache:v2', {
+      schema: 1,
+      raw: '{"schema":2,"version":"v-current","count":1000,"entries":[]}',
+      meta: { version: 'v-current', fetchedAt: 1, count: entries.length },
+    }],
+  ]);
+  const requests = [];
+  const synchronizer = core.createListSynchronizer({
+    now: () => 1000,
+    requestText: async (url) => {
+      requests.push(url);
+      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
+      if (url.endsWith('/v1/list/meta')) {
+        return '{"version":"v-current","artifacts":{"lite":"/v1/artifacts/lite-v-current.json"}}';
+      }
+      return artifactText;
+    },
+    storage: {
+      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+      set: async (key, value) => values.set(key, value),
+    },
+  });
+
+  const result = await synchronizer.sync(false);
+
+  assert.equal(result.updated, true);
+  assert.equal(requests.at(-1), 'https://x.zuoluo.tv/v1/artifacts/lite-v-current.json');
+  assert.equal(values.get('mxga:list-cache:v2').raw, artifactText);
 });
 
 test('a corrupt list update never replaces the last known-good cache', async () => {

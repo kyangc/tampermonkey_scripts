@@ -10,9 +10,9 @@
 
 测试对象：
 
-- MXGA `0.2.2`
-- commit `5b209a0a58296ac46d29cd1c8e9ecca910840bf7`
-- 与 GitHub Raw SHA-256 一致的生成脚本
+- 分享图资源管理：MXGA `0.2.2`，commit `5b209a0a58296ac46d29cd1c8e9ecca910840bf7`
+- 增量扫描与重复注入：MXGA `0.2.3`，commit `62aac1d3356acc01578081e3ccde2d14e1863e0d`
+- 两次测试均使用与对应 GitHub Raw SHA-256 一致的生成脚本
 - headed Google Chrome，由 Playwright CLI 驱动
 - 合成的公开推文 DOM；不使用 X 登录态、Cookie 或私人时间线
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.3
+// @version      0.2.4
 // @description  Mark public-list spam accounts and generate share cards on X across PC and iOS.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -62,6 +62,7 @@
   const MAX_LITE_BYTES = 25 * 1024 * 1024;
   const MAX_WHITELIST_BYTES = 2 * 1024 * 1024;
   const MAX_META_BYTES = 64 * 1024;
+  const LIST_STALE_MS = 6 * 60 * 60 * 1000;
   const SERVICE_BASE = 'https://x.zuoluo.tv';
   const ARTIFACT_PATH_RE = /^\/v1\/artifacts\/[A-Za-z0-9._-]+$/;
   const ACCOUNT_CONTENT_SELECTOR =
@@ -119,6 +120,17 @@
     const meta = sanitizeStoredListMeta(value.meta);
     if (!meta) return null;
     return { schema: 1, raw: value.raw, meta };
+  }
+
+  function isListStale(meta, now = Date.now()) {
+    const fetchedAt = Number(meta?.fetchedAt);
+    const checkedAt = Number(now);
+    return (
+      !Number.isFinite(fetchedAt) ||
+      fetchedAt <= 0 ||
+      !Number.isFinite(checkedAt) ||
+      checkedAt - fetchedAt >= LIST_STALE_MS
+    );
   }
 
   async function readStoredListSnapshot(storage) {
@@ -246,14 +258,27 @@
 
         const stored = await readStoredListSnapshot(storage);
         if (!force && stored.meta?.version && metaVersion === stored.meta.version && stored.raw) {
-          return {
-            updated: false,
-            version: stored.meta.version,
-            black: stored.meta.count,
-            white,
-            whitelistEntries: refreshedWhitelist?.entries,
-            meta: stored.meta,
-          };
+          const cached = parseStoredListSnapshot(stored);
+          if (cached.entries.length > 0 && !cached.error) {
+            const confirmedMeta = {
+              version: stored.meta.version,
+              fetchedAt: now(),
+              count: cached.entries.length,
+            };
+            await storage.set(STORAGE_KEYS.listCache, {
+              schema: 1,
+              raw: stored.raw,
+              meta: confirmedMeta,
+            });
+            return {
+              updated: false,
+              version: confirmedMeta.version,
+              black: confirmedMeta.count,
+              white,
+              whitelistEntries: refreshedWhitelist?.entries,
+              meta: confirmedMeta,
+            };
+          }
         }
 
         const artifactText = await requestText(`${baseUrl}${artifactPath}`, MAX_LITE_BYTES);
@@ -431,19 +456,16 @@
     }
     rows.sort((left, right) => compareHandles(left?.[1] || '', right?.[1] || ''));
 
-    const whitelistIds = new Set();
     const whitelistHandles = new Set();
     for (const row of Array.isArray(whitelistEntries) ? whitelistEntries : []) {
       if (!Array.isArray(row)) continue;
-      if (row[0]) whitelistIds.add(String(row[0]));
       const handle = normalizeHandle(row[1]);
       if (handle) whitelistHandles.add(handle);
     }
 
     function lookup(identity = {}) {
-      const userId = identity.userId ? String(identity.userId) : '';
       const handle = normalizeHandle(identity.handle);
-      if ((userId && whitelistIds.has(userId)) || (handle && whitelistHandles.has(handle))) return null;
+      if (handle && whitelistHandles.has(handle)) return null;
 
       if (handle) {
         let low = 0;
@@ -455,11 +477,6 @@
           if (candidate < handle) low = middle + 1;
           else high = middle - 1;
         }
-      }
-
-      if (userId) {
-        const row = rows.find((candidate) => String(candidate?.[0] || '') === userId);
-        if (row) return decodeEntry(row);
       }
       return null;
     }
@@ -551,20 +568,15 @@
     return entries;
   }
 
-  async function readStoredList(storage) {
-    const [snapshot, whitelist] = await Promise.all([
-      readStoredListSnapshot(storage),
-      storage.get(STORAGE_KEYS.whitelist, null),
-    ]);
+  function parseStoredListSnapshot(snapshot) {
     const { raw, meta: storedMeta } = snapshot;
-    const whitelistEntries = sanitizeStoredWhitelist(whitelist);
     if (typeof raw !== 'string' || !raw) {
-      return { entries: [], meta: storedMeta, whitelistEntries, error: null };
+      return { entries: [], meta: storedMeta, error: null };
     }
     try {
       const validated = validateLiteArtifact(parseJson(raw, 'cached lite artifact'));
       if (!validated.ok) {
-        return { entries: [], meta: storedMeta, whitelistEntries, error: validated.error };
+        return { entries: [], meta: storedMeta, error: validated.error };
       }
       if (
         !snapshot.legacy &&
@@ -574,7 +586,6 @@
         return {
           entries: [],
           meta: null,
-          whitelistEntries,
           error: 'cached list version mismatch',
         };
       }
@@ -585,7 +596,6 @@
         return {
           entries: [],
           meta: null,
-          whitelistEntries,
           error: 'cached list count mismatch',
         };
       }
@@ -593,24 +603,32 @@
         return {
           entries: [],
           meta: storedMeta,
-          whitelistEntries,
           error: 'cached list is implausibly small',
         };
       }
       return {
         entries: validated.value.entries,
         meta: storedMeta,
-        whitelistEntries,
         error: null,
       };
     } catch (error) {
       return {
         entries: [],
         meta: storedMeta,
-        whitelistEntries,
         error: errorMessage(error, '缓存读取失败'),
       };
     }
+  }
+
+  async function readStoredList(storage) {
+    const [snapshot, whitelist] = await Promise.all([
+      readStoredListSnapshot(storage),
+      storage.get(STORAGE_KEYS.whitelist, null),
+    ]);
+    return {
+      ...parseStoredListSnapshot(snapshot),
+      whitelistEntries: sanitizeStoredWhitelist(whitelist),
+    };
   }
 
   const core = {
@@ -627,6 +645,8 @@
     findProfileNameBlock,
     getAccountPresentation,
     getAccountVisibility,
+    isListStale,
+    LIST_STALE_MS,
     normalizeSettings,
     normalizeHandle,
     readStoredList,
@@ -647,7 +667,6 @@
     enabled: true,
     hideConfirmed: true,
   });
-  const LIST_STALE_MS = 6 * 60 * 60 * 1000;
   const SYNC_LOCK_MS = 5 * 60 * 1000;
   const APPEAL_URL =
     'https://github.com/foru17/make-x-great-again/issues/new?template=appeal.yml';
@@ -1575,6 +1594,11 @@
       return syncPromise;
     }
 
+    function syncIfStale() {
+      if (state.index.size === 0 || isListStale(state.meta)) return syncNow(false);
+      return Promise.resolve();
+    }
+
     ui = createUi(
       {
         onAppeal: () => openExternal(gm, APPEAL_URL),
@@ -1611,16 +1635,19 @@
     global.addEventListener('popstate', scanner.schedule, { passive: true });
     global.addEventListener('pageshow', scanner.schedule, { passive: true });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') void reloadStoredState();
+      if (document.visibilityState !== 'visible') return;
+      void reloadStoredState().then(syncIfStale).catch((error) => {
+        state.error = errorMessage(error, '名单状态恢复失败');
+        render();
+      });
     });
     global.setInterval(() => {
-      if (document.visibilityState === 'visible') scanner.schedule();
+      if (document.visibilityState !== 'visible') return;
+      scanner.schedule();
+      void syncIfStale();
     }, 15000);
 
-    const fetchedAt = Number(state.meta?.fetchedAt || 0);
-    if (state.index.size === 0 || !fetchedAt || Date.now() - fetchedAt > LIST_STALE_MS) {
-      void syncNow(false);
-    }
+    void syncIfStale();
   }
 
   void bootstrap().catch((error) => {
@@ -1805,9 +1832,7 @@
     const currentIndex = articles.indexOf(article);
     if (currentIndex < 0) return null;
 
-    if (currentStatusId === pageStatusId) {
-      return currentIndex > 0 ? articles[currentIndex - 1] : null;
-    }
+    if (currentStatusId === pageStatusId) return null;
 
     return articles.find((candidate) => {
       const quoteRoot = findQuotedTweetRoot(candidate);

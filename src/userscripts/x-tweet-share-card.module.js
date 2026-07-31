@@ -174,9 +174,7 @@
     const currentIndex = articles.indexOf(article);
     if (currentIndex < 0) return null;
 
-    if (currentStatusId === pageStatusId) {
-      return currentIndex > 0 ? articles[currentIndex - 1] : null;
-    }
+    if (currentStatusId === pageStatusId) return null;
 
     return articles.find((candidate) => {
       const quoteRoot = findQuotedTweetRoot(candidate);

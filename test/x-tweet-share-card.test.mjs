@@ -372,7 +372,7 @@ test('extracts an X quoted tweet without mixing its text or images into the oute
   assert.deepEqual(extracted.context.tweet.mediaUrls, ['https://pbs.twimg.com/media/quote.jpg?name=large']);
 });
 
-test('extracts the preceding parent tweet when sharing a reply from its conversation page', () => {
+test('uses a page status relationship for reply context and never guesses from the preceding tweet', () => {
   const makeArticle = ({ name, handle, text, statusId }) => {
     const statusAnchor = {
       getAttribute: (attribute) => attribute === 'href' ? `/${handle}/status/${statusId}` : null,
@@ -415,27 +415,33 @@ test('extracts the preceding parent tweet when sharing a reply from its conversa
     text: 'My reply',
     statusId: '222',
   });
+  const promoted = makeArticle({
+    name: 'Promoted Account',
+    handle: 'promoted',
+    text: 'Unrelated promoted post',
+    statusId: '999',
+  });
   const ownerDocument = {
     querySelectorAll: (selector) => selector === 'article[data-testid="tweet"]'
-      ? [parent, reply]
+      ? [parent, promoted, reply]
       : [],
   };
   parent.ownerDocument = ownerDocument;
+  promoted.ownerDocument = ownerDocument;
   reply.ownerDocument = ownerDocument;
 
   const extracted = core.extractTweetData(reply, {
     pageUrl: 'https://x.com/reply_author/status/222',
   });
 
-  assert.equal(extracted.context.kind, 'reply');
-  assert.equal(extracted.context.tweet.authorName, 'Original Author');
-  assert.equal(extracted.context.tweet.text, 'The complete parent post');
-  assert.equal(extracted.context.tweet.statusUrl, 'https://x.com/original/status/111');
+  assert.equal(extracted.context, null);
 
   const extractedFromRootConversation = core.extractTweetData(reply, {
     pageUrl: 'https://x.com/original/status/111',
   });
   assert.equal(extractedFromRootConversation.context.kind, 'reply');
+  assert.equal(extractedFromRootConversation.context.tweet.authorName, 'Original Author');
+  assert.equal(extractedFromRootConversation.context.tweet.text, 'The complete parent post');
   assert.equal(extractedFromRootConversation.context.tweet.statusUrl, 'https://x.com/original/status/111');
 });
 

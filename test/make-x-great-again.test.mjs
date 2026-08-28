@@ -202,6 +202,44 @@ test('keyword blocking inspects only the tweet body rendered by X', () => {
   }, ['Card summary']), null);
 });
 
+test('a text selection becomes a block candidate only inside one primary tweet body', () => {
+  const rect = { left: 100, top: 80, right: 180, bottom: 100, width: 80, height: 20 };
+  const article = {
+    querySelectorAll: (selector) => selector === '[data-testid="tweetText"]' ? [tweetText] : [],
+  };
+  const tweetText = {
+    closest: (selector) => selector === 'article[data-testid="tweet"]' ? article : null,
+    contains: (node) => node === startNode || node === endNode,
+  };
+  const startNode = {
+    parentElement: { closest: () => tweetText },
+  };
+  const endNode = {
+    parentElement: { closest: () => tweetText },
+  };
+  const range = {
+    startContainer: startNode,
+    endContainer: endNode,
+    getBoundingClientRect: () => rect,
+  };
+  const selection = {
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => range,
+    toString: () => '  Great\n  insight  ',
+  };
+
+  assert.deepEqual(core.getKeywordSelectionCandidate(selection), {
+    keyword: 'Great insight',
+    rect,
+  });
+  assert.equal(core.getKeywordSelectionCandidate({ ...selection, isCollapsed: true }), null);
+  assert.equal(core.getKeywordSelectionCandidate({
+    ...selection,
+    getRangeAt: () => ({ ...range, endContainer: { parentElement: { closest: () => ({}) } } }),
+  }), null);
+});
+
 test('panel backdrop clicks are consumed so they close without reaching the page below', () => {
   const backdrop = {};
   let prevented = false;
@@ -602,6 +640,23 @@ test('profile-link parsing accepts only direct X account paths', () => {
   assert.equal(core.extractHandleFromHref('/bad-handle'), null);
 });
 
+test('avatar blocking binds only to the avatar link for the current tweet author', () => {
+  const quotedAvatar = {
+    getAttribute: (name) => name === 'href' ? '/QuotedAccount' : null,
+  };
+  const authorAvatar = {
+    getAttribute: (name) => name === 'href' ? '/CurrentAuthor' : null,
+  };
+  const item = {
+    querySelectorAll: (selector) => selector === '[data-testid="Tweet-User-Avatar"] a[href]'
+      ? [quotedAvatar, authorAvatar]
+      : [],
+  };
+
+  assert.equal(core.findAvatarTrigger(item, 'currentauthor'), authorAvatar);
+  assert.equal(core.findAvatarTrigger(item, 'missingauthor'), null);
+});
+
 test('profile badge mount falls back to the semantic public-profile markup used by X', () => {
   const mount = {};
   const handleLeaf = {
@@ -684,6 +739,20 @@ test('settings panel exposes a local multiline keyword editor that can be saved 
   assert.match(scriptText, /data-action="save-keywords"/);
   assert.match(scriptText, /callbacks\.onBlockedKeywordsChange\(elements\.blockedKeywords\.value\)/);
   assert.match(scriptText, /仅匹配推文正文/);
+});
+
+test('published userscript offers an immediate block action for selected tweet text', () => {
+  assert.match(scriptText, /role="toolbar" aria-label="选中文本操作"/);
+  assert.match(scriptText, /data-action="block-selection"/);
+  assert.match(scriptText, /callbacks\.onBlockKeyword\(keyword\)/);
+  assert.match(scriptText, /getKeywordSelectionCandidate\(global\.getSelection\(\)\)/);
+});
+
+test('published userscript mounts a local block popover on tweet author avatars', () => {
+  assert.match(scriptText, /\[data-testid="Tweet-User-Avatar"\] a\[href\]/);
+  assert.match(scriptText, /data-mxga-avatar-trigger/);
+  assert.match(scriptText, /本地屏蔽该用户/);
+  assert.match(scriptText, /categoryText: '手动屏蔽'/);
 });
 
 test('userscript contains no X private API or page-world network client', () => {

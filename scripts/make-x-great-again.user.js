@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.3.0
-// @description  Hide spam accounts or keyword-matched posts and generate share cards on X.
+// @version      0.4.0
+// @description  Quick-block selected phrases or users, hide spam, and generate share cards on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
 // @source       https://github.com/foru17/make-x-great-again
@@ -342,12 +342,18 @@
       : '';
   }
 
+  function normalizeKeyword(value) {
+    return typeof value === 'string'
+      ? value.normalize('NFKC').replace(/\s+/g, ' ').trim()
+      : '';
+  }
+
   function normalizeKeywords(value) {
     const rows = typeof value === 'string' ? value.split(/\r?\n/) : value;
     const keywords = [];
     const seen = new Set();
     for (const row of Array.isArray(rows) ? rows : []) {
-      const keyword = typeof row === 'string' ? row.replace(/\s+/g, ' ').trim() : '';
+      const keyword = normalizeKeyword(row);
       const normalized = normalizeMatchText(keyword);
       if (!normalized || seen.has(normalized)) continue;
       seen.add(normalized);
@@ -365,7 +371,7 @@
     return null;
   }
 
-  function findBlockedKeywordInContent(item, keywords) {
+  function getPrimaryTweetTextNode(item) {
     const selector = '[data-testid="tweetText"]';
     const tweetTexts = typeof item?.querySelectorAll === 'function'
       ? Array.from(item.querySelectorAll(selector))
@@ -378,7 +384,39 @@
         linkedCard.querySelector?.('[data-testid="User-Name"], [data-testid="UserName"]')
       );
     });
+    return tweetText || null;
+  }
+
+  function findBlockedKeywordInContent(item, keywords) {
+    const tweetText = getPrimaryTweetTextNode(item);
     return findBlockedKeyword(tweetText?.textContent || '', keywords);
+  }
+
+  function getKeywordSelectionCandidate(selection) {
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const range = selection.getRangeAt?.(0);
+    const startElement = range?.startContainer?.closest
+      ? range.startContainer
+      : range?.startContainer?.parentElement;
+    const endElement = range?.endContainer?.closest
+      ? range.endContainer
+      : range?.endContainer?.parentElement;
+    const startTweetText = startElement?.closest?.('[data-testid="tweetText"]');
+    const endTweetText = endElement?.closest?.('[data-testid="tweetText"]');
+    if (!startTweetText || startTweetText !== endTweetText) return null;
+    if (
+      !startTweetText.contains?.(range.startContainer) ||
+      !startTweetText.contains?.(range.endContainer)
+    ) {
+      return null;
+    }
+    const article = startTweetText.closest?.('article[data-testid="tweet"]');
+    if (!article || getPrimaryTweetTextNode(article) !== startTweetText) return null;
+    const keyword = normalizeKeyword(selection.toString?.() || '');
+    if (!keyword) return null;
+    const rect = range.getBoundingClientRect?.();
+    if (!rect) return null;
+    return { keyword, rect };
   }
 
   function compareHandles(left, right) {
@@ -417,6 +455,17 @@
     } catch (_error) {
       return null;
     }
+  }
+
+  function findAvatarTrigger(item, handle) {
+    const normalized = normalizeHandle(handle);
+    if (!normalized || typeof item?.querySelectorAll !== 'function') return null;
+    for (const link of item.querySelectorAll('[data-testid="Tweet-User-Avatar"] a[href]')) {
+      if (normalizeHandle(extractHandleFromHref(link.getAttribute?.('href') || '')) === normalized) {
+        return link;
+      }
+    }
+    return null;
   }
 
   function decodeEntry(row) {
@@ -687,11 +736,13 @@
     decodeEntry,
     errorMessage,
     extractHandleFromHref,
+    findAvatarTrigger,
     findBlockedKeyword,
     findBlockedKeywordInContent,
     findProfileNameBlock,
     getAccountPresentation,
     getAccountVisibility,
+    getKeywordSelectionCandidate,
     isListStale,
     LIST_STALE_MS,
     normalizeSettings,
@@ -907,12 +958,14 @@
     '.tag.auto{background:rgba(245,158,11,.13);color:#fbbf24}',
     '.popover-copy{margin:8px 0 12px;color:var(--muted);font-size:12px;line-height:1.6}',
     '.popover-actions{display:flex;flex-wrap:wrap;gap:8px}',
+    '.selection-toolbar{position:fixed;z-index:2147483005;display:flex;padding:5px;border:1px solid var(--line);border-radius:12px;background:rgba(22,24,28,.99);box-shadow:0 12px 36px rgba(0,0,0,.45);transform:translateX(-50%)}',
+    '.selection-toolbar .button{min-height:34px;padding:6px 11px}',
     '.toast{position:fixed;z-index:2147483005;left:50%;bottom:max(72px,calc(env(safe-area-inset-bottom) + 68px));transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);padding:10px 12px;border:1px solid var(--line);border-radius:999px;background:#202327;color:var(--text);box-shadow:0 10px 35px rgba(0,0,0,.45)}',
     '.toast span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.toast button{flex:none;padding:4px 8px;border:0;background:none;color:#8ecdf8;font-weight:750;cursor:pointer}',
     '@keyframes pulse{50%{opacity:.45}}',
-    '@media(prefers-color-scheme:light){:host{color-scheme:light;--bg:#fff;--panel:#fff;--soft:#f2f4f5;--line:#d8dee3;--text:#0f1419;--muted:#536471}.control{background:rgba(255,255,255,.95);box-shadow:0 8px 30px rgba(15,20,25,.16)}.control:hover{border-color:#aab4bc;background:#eef1f3}.button:hover,.icon-button:hover{border-color:#aab4bc;background:#e5eaed}.panel,.panel-header,.popover{background:rgba(255,255,255,.98)}.notice{background:#f7f9f9}.toast{background:white}}',
-    '@media(max-width:600px),(hover:none){.control{min-height:46px;bottom:max(64px,calc(env(safe-area-inset-bottom) + 56px))}.panel{left:8px;right:8px;bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px));width:auto;max-height:72vh;max-height:min(72dvh,720px);border-radius:20px}.button{min-height:44px}.icon-button{width:42px;height:42px}.popover{left:8px!important;right:8px!important;top:auto!important;bottom:max(8px,env(safe-area-inset-bottom));width:auto;border-radius:20px;padding:16px}.toast{bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px))}}',
+    '@media(prefers-color-scheme:light){:host{color-scheme:light;--bg:#fff;--panel:#fff;--soft:#f2f4f5;--line:#d8dee3;--text:#0f1419;--muted:#536471}.control{background:rgba(255,255,255,.95);box-shadow:0 8px 30px rgba(15,20,25,.16)}.control:hover{border-color:#aab4bc;background:#eef1f3}.button:hover,.icon-button:hover{border-color:#aab4bc;background:#e5eaed}.panel,.panel-header,.popover,.selection-toolbar{background:rgba(255,255,255,.98)}.notice{background:#f7f9f9}.toast{background:white}}',
+    '@media(max-width:600px),(hover:none){.control{min-height:46px;bottom:max(64px,calc(env(safe-area-inset-bottom) + 56px))}.panel{left:8px;right:8px;bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px));width:auto;max-height:72vh;max-height:min(72dvh,720px);border-radius:20px}.button{min-height:44px}.icon-button{width:42px;height:42px}.popover{left:8px!important;right:8px!important;top:auto!important;bottom:max(8px,env(safe-area-inset-bottom));width:auto;border-radius:20px;padding:16px}.selection-toolbar{max-width:calc(100vw - 16px)}.toast{bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px))}}',
     '@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}',
   ].join('\n');
 
@@ -972,7 +1025,8 @@
       '<div class="links"><button class="link-button" type="button" data-action="open-upstream">上游项目 ↗</button><button class="link-button" type="button" data-action="open-source">本脚本源码 ↗</button></div>',
       '</div>',
       '</section>',
-      '<section class="popover" data-role="popover" hidden aria-label="账号名单详情"></section>',
+      '<section class="popover" data-role="popover" hidden aria-label="账号操作"></section>',
+      '<section class="selection-toolbar" data-role="selection-toolbar" role="toolbar" aria-label="选中文本操作" hidden><button class="button danger" type="button" data-action="block-selection">屏蔽所选文字</button></section>',
       '<div class="toast" data-role="toast" hidden role="status" aria-live="polite"><span data-role="toast-text"></span><button type="button" data-action="undo">撤销</button></div>',
     ].join('');
     root.appendChild(shell);
@@ -997,12 +1051,16 @@
       hiddenCount: root.querySelector('[data-role="hidden-count"]'),
       hiddenList: root.querySelector('[data-role="hidden-list"]'),
       popover: root.querySelector('[data-role="popover"]'),
+      selectionToolbar: root.querySelector('[data-role="selection-toolbar"]'),
+      blockSelection: root.querySelector('[data-action="block-selection"]'),
       toast: root.querySelector('[data-role="toast"]'),
       toastText: root.querySelector('[data-role="toast-text"]'),
     };
     elements.subtitle.textContent = environment;
 
     let currentPopover = null;
+    let currentSelectionKeyword = '';
+    const avatarContexts = new WeakMap();
     let popoverTimer = 0;
     let toastTimer = 0;
     let undoHandle = '';
@@ -1011,7 +1069,10 @@
       elements.panel.hidden = !open;
       elements.backdrop.hidden = !open;
       elements.control.setAttribute('aria-expanded', String(open));
-      if (open) closePopover();
+      if (open) {
+        closePopover();
+        hideSelectionToolbar();
+      }
     }
 
     function cancelPopoverClose() {
@@ -1032,6 +1093,31 @@
       popoverTimer = global.setTimeout(closePopover, 160);
     }
 
+    function hideSelectionToolbar() {
+      elements.selectionToolbar.hidden = true;
+      currentSelectionKeyword = '';
+    }
+
+    function showSelectionToolbar(candidate) {
+      if (!candidate?.keyword || !candidate.rect) {
+        hideSelectionToolbar();
+        return;
+      }
+      currentSelectionKeyword = candidate.keyword;
+      elements.blockSelection.title = '屏蔽“' + candidate.keyword + '”';
+      elements.selectionToolbar.hidden = false;
+      const rect = candidate.rect;
+      const desiredLeft = Math.min(
+        Math.max(92, rect.left + rect.width / 2),
+        Math.max(92, global.innerWidth - 92),
+      );
+      let desiredTop = rect.top - 50;
+      if (desiredTop < 8) desiredTop = rect.bottom + 8;
+      elements.selectionToolbar.style.left = desiredLeft + 'px';
+      elements.selectionToolbar.style.top =
+        Math.min(Math.max(8, desiredTop), Math.max(8, global.innerHeight - 54)) + 'px';
+    }
+
     function addTextElement(parent, tag, className, text) {
       const element = document.createElement(tag);
       if (className) element.className = className;
@@ -1049,37 +1135,45 @@
       popover.replaceChildren();
 
       const heading = document.createElement('div');
-      addTextElement(heading, 'h3', '', presentation.badgeText + '账号提示');
+      addTextElement(heading, 'h3', '', presentation ? presentation.badgeText + '账号提示' : '账号操作');
       addTextElement(heading, 'div', 'popover-account', '@' + handle);
       popover.appendChild(heading);
 
       const tags = document.createElement('div');
       tags.className = 'tags';
-      addTextElement(tags, 'span', 'tag', presentation.categoryText);
-      addTextElement(
-        tags,
-        'span',
-        'tag ' + (entry.tier === 'confirmed' ? 'confirmed' : 'auto'),
-        presentation.tierText,
-      );
+      if (presentation) {
+        addTextElement(tags, 'span', 'tag', presentation.categoryText);
+        addTextElement(
+          tags,
+          'span',
+          'tag ' + (entry.tier === 'confirmed' ? 'confirmed' : 'auto'),
+          presentation.tierText,
+        );
+      } else {
+        addTextElement(tags, 'span', 'tag', '本地操作');
+      }
       popover.appendChild(tags);
       addTextElement(
         popover,
         'p',
         'popover-copy',
-        entry.tier === 'confirmed'
-          ? '命中人工确认名单。开启自动隐藏时，列表账号和推文不会展示；你也可以在本机手动隐藏或恢复。'
-          : '命中自动收录名单。此类条目只做提示，不会自动隐藏；你可以选择在本机隐藏。',
+        presentation
+          ? entry.tier === 'confirmed'
+            ? '命中人工确认名单。开启自动隐藏时，列表账号和推文不会展示；你也可以在本机手动隐藏或恢复。'
+            : '命中自动收录名单。此类条目只做提示，不会自动隐藏；你可以选择在本机隐藏。'
+          : '点击后会在本机屏蔽该账号，并立即隐藏当前页面中该账号的内容；可在 MXGA 面板恢复。',
       );
 
       const actions = document.createElement('div');
       actions.className = 'popover-actions';
-      const hide = addTextElement(actions, 'button', 'button danger', '本地隐藏');
+      const hide = addTextElement(actions, 'button', 'button danger', '本地屏蔽该用户');
       hide.type = 'button';
       hide.dataset.action = 'hide-current';
-      const appeal = addTextElement(actions, 'button', 'button', '误判申诉 ↗');
-      appeal.type = 'button';
-      appeal.dataset.action = 'appeal';
+      if (presentation) {
+        const appeal = addTextElement(actions, 'button', 'button', '误判申诉 ↗');
+        appeal.type = 'button';
+        appeal.dataset.action = 'appeal';
+      }
       const close = addTextElement(actions, 'button', 'button', '关闭');
       close.type = 'button';
       close.dataset.action = 'close-popover';
@@ -1106,6 +1200,21 @@
         popover.style.removeProperty('top');
       }
       global.addEventListener('scroll', closePopover, { capture: true, passive: true });
+    }
+
+    function mountAvatarTrigger(anchor, handle, entry) {
+      if (!anchor || typeof anchor.addEventListener !== 'function') return;
+      avatarContexts.set(anchor, { handle: normalizeHandle(handle), entry });
+      if (anchor.hasAttribute?.('data-mxga-avatar-trigger')) return;
+      anchor.setAttribute?.('data-mxga-avatar-trigger', '1');
+      const open = () => {
+        const context = avatarContexts.get(anchor);
+        if (context?.handle) openPopover(anchor, context.handle, context.entry);
+      };
+      anchor.addEventListener('mouseenter', () => {
+        if (global.matchMedia?.('(hover:hover) and (pointer:fine)').matches) open();
+      });
+      anchor.addEventListener('mouseleave', schedulePopoverClose);
     }
 
     function renderHidden(records) {
@@ -1196,6 +1305,11 @@
       else if (action === 'sync') callbacks.onSync();
       else if (action === 'save-keywords') {
         callbacks.onBlockedKeywordsChange(elements.blockedKeywords.value);
+      } else if (action === 'block-selection' && currentSelectionKeyword) {
+        const keyword = currentSelectionKeyword;
+        hideSelectionToolbar();
+        global.getSelection()?.removeAllRanges();
+        callbacks.onBlockKeyword(keyword);
       } else if (action === 'restore') callbacks.onRestore(target.dataset.handle || '');
       else if (action === 'hide-current' && currentPopover) {
         const selected = currentPopover;
@@ -1217,13 +1331,18 @@
     elements.hideConfirmed.addEventListener('change', () => {
       callbacks.onHideConfirmedChange(elements.hideConfirmed.checked);
     });
+    elements.selectionToolbar.addEventListener('pointerdown', (event) => event.preventDefault());
 
     return {
       cancelPopoverClose,
       closePopover,
+      hideSelectionToolbar,
+      host,
+      mountAvatarTrigger,
       openPopover,
       render,
       schedulePopoverClose,
+      showSelectionToolbar,
       showUndo,
     };
   }
@@ -1397,6 +1516,8 @@
         return;
       }
       revealCell(cell);
+      const avatarTrigger = findAvatarTrigger(item, normalized);
+      if (avatarTrigger) ui.mountAvatarTrigger(avatarTrigger, normalized, entry);
 
       if (visibility === 'labeled') mountOrUpdateBadge(nameBlock, normalized, entry, ui);
       else clearBadgeMounts(nameBlock);
@@ -1532,8 +1653,11 @@
     }
 
     async function hideHandle(handle, entry) {
-      const presentation = getAccountPresentation(entry);
-      if (!presentation || !state.hidden.hide(handle, presentation)) return;
+      const presentation = getAccountPresentation(entry) || {
+        categoryText: '手动屏蔽',
+        tierText: '头像操作',
+      };
+      if (!state.hidden.hide(handle, presentation)) return;
       scanner.hideVisible(handle);
       ui.showUndo(handle);
       render();
@@ -1550,6 +1674,12 @@
         state.error = '设置保存失败：' + errorMessage(error);
         render();
       }
+    }
+
+    async function blockKeyword(keyword) {
+      await updateSettings({
+        blockedKeywords: [...state.settings.blockedKeywords, keyword],
+      });
     }
 
     async function acquireSyncLock() {
@@ -1682,6 +1812,9 @@
         onBlockedKeywordsChange: (blockedKeywords) => {
           void updateSettings({ blockedKeywords });
         },
+        onBlockKeyword: (keyword) => {
+          void blockKeyword(keyword);
+        },
         onHide: (handle, entry) => {
           void hideHandle(handle, entry);
         },
@@ -1699,6 +1832,19 @@
     render();
     scanner.scan();
 
+    let selectionTimer = 0;
+    function captureKeywordSelection() {
+      if (!state.settings.enabled) {
+        ui.hideSelectionToolbar();
+        return;
+      }
+      ui.showSelectionToolbar(getKeywordSelectionCandidate(global.getSelection()));
+    }
+    function scheduleSelectionCapture(delay = 0) {
+      global.clearTimeout(selectionTimer);
+      selectionTimer = global.setTimeout(captureKeywordSelection, delay);
+    }
+
     const observer = new MutationObserver(scanner.schedule);
     observer.observe(document.body || document.documentElement, {
       attributes: true,
@@ -1708,6 +1854,22 @@
     });
     global.addEventListener('popstate', scanner.schedule, { passive: true });
     global.addEventListener('pageshow', scanner.schedule, { passive: true });
+    global.addEventListener('scroll', ui.hideSelectionToolbar, { capture: true, passive: true });
+    document.addEventListener('selectionchange', () => scheduleSelectionCapture(80));
+    document.addEventListener('mouseup', (event) => {
+      if (event.composedPath().includes(ui.host)) return;
+      scheduleSelectionCapture();
+    });
+    document.addEventListener('keyup', (event) => {
+      if (event.key === 'Escape') {
+        ui.hideSelectionToolbar();
+        return;
+      }
+      if (event.shiftKey || event.key.startsWith('Arrow')) scheduleSelectionCapture();
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (!event.composedPath().includes(ui.host)) ui.hideSelectionToolbar();
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
       void reloadStoredState().then(syncIfStale).catch((error) => {

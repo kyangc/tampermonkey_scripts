@@ -202,6 +202,111 @@ test('keyword blocking inspects only the tweet body rendered by X', () => {
   }, ['Card summary']), null);
 });
 
+test('multi-device filter documents preserve newer removals and independent additions', () => {
+  const initial = core.reconcileFilterDocument(
+    { items: {}, schema: 1 },
+    {
+      blockedKeywords: ['Spam phrase'],
+      hiddenRecords: [{
+        categoryText: '手动屏蔽',
+        handle: 'first_bot',
+        hiddenAt: 100,
+        tierText: '头像操作',
+      }],
+    },
+    { deviceId: 'device-primary', now: () => 1_000 },
+  );
+  const removedKeyword = core.reconcileFilterDocument(
+    initial,
+    {
+      blockedKeywords: [],
+      hiddenRecords: core.materializeFilterDocument(initial).hiddenRecords,
+    },
+    { deviceId: 'device-primary', now: () => 3_000 },
+  );
+  const addedElsewhere = core.reconcileFilterDocument(
+    initial,
+    {
+      blockedKeywords: ['Spam phrase'],
+      hiddenRecords: [
+        ...core.materializeFilterDocument(initial).hiddenRecords,
+        {
+          categoryText: '手动屏蔽',
+          handle: 'second_bot',
+          hiddenAt: 200,
+          tierText: '头像操作',
+        },
+      ],
+    },
+    { deviceId: 'device-secondary', now: () => 2_000 },
+  );
+
+  const merged = core.materializeFilterDocument(
+    core.mergeFilterDocuments(removedKeyword, addedElsewhere),
+  );
+  assert.deepEqual(merged.blockedKeywords, []);
+  assert.deepEqual(merged.hiddenRecords.map((record) => record.handle), [
+    'second_bot',
+    'first_bot',
+  ]);
+});
+
+test('filter sync merges a public snapshot and retries a concurrent revision', async () => {
+  const local = core.reconcileFilterDocument(
+    { items: {}, schema: 1 },
+    {
+      blockedKeywords: [],
+      hiddenRecords: [{ handle: 'local_bot', hiddenAt: 300 }],
+    },
+    { deviceId: 'device-local', now: () => 3_000 },
+  );
+  const remote = core.reconcileFilterDocument(
+    { items: {}, schema: 1 },
+    { blockedKeywords: ['Remote phrase'], hiddenRecords: [] },
+    { deviceId: 'device-remote', now: () => 1_000 },
+  );
+  const concurrent = core.reconcileFilterDocument(
+    remote,
+    {
+      blockedKeywords: ['Remote phrase'],
+      hiddenRecords: [{ handle: 'other_bot', hiddenAt: 200 }],
+    },
+    { deviceId: 'device-other', now: () => 2_000 },
+  );
+  const requests = [];
+  const responses = [
+    { body: { document: remote, revision: 2 }, status: 200 },
+    { body: { document: concurrent, revision: 3 }, status: 409 },
+    { body: { revision: 4 }, status: 200 },
+  ];
+  const synchronizer = core.createFilterSynchronizer({
+    endpoint: 'https://sync.example.test',
+    requestJson: async (request) => {
+      requests.push(request);
+      return responses.shift();
+    },
+  });
+
+  const result = await synchronizer.sync({
+    document: local,
+    token: 'write-token-long-enough-for-tests',
+  });
+
+  assert.deepEqual(
+    core.materializeFilterDocument(result.document).blockedKeywords,
+    ['Remote phrase'],
+  );
+  assert.deepEqual(
+    core.materializeFilterDocument(result.document).hiddenRecords.map((record) => record.handle),
+    ['local_bot', 'other_bot'],
+  );
+  assert.equal(result.revision, 4);
+  assert.equal(requests[0].method, 'GET');
+  assert.equal(requests[1].body.baseRevision, 2);
+  assert.equal(requests[2].body.baseRevision, 3);
+  assert.equal(requests[2].headers.Authorization, 'Bearer write-token-long-enough-for-tests');
+});
+
 test('a text selection becomes a block candidate only inside one primary tweet body', () => {
   const rect = { left: 100, top: 80, right: 180, bottom: 100, width: 80, height: 20 };
   const article = {
@@ -575,6 +680,38 @@ test('GM request adapter performs a bodyless read-only request', async () => {
   assert.equal('data' in requests[0], false);
 });
 
+test('GM JSON request adapter preserves authenticated writes and conflict payloads', async () => {
+  let seen;
+  const requestJson = core.createJsonRequestAdapter({
+    xmlHttpRequest: async (request) => {
+      seen = request;
+      return {
+        responseText: JSON.stringify({
+          document: { items: {}, schema: 1 },
+          revision: 3,
+        }),
+        status: 409,
+      };
+    },
+  });
+
+  const result = await requestJson({
+    body: { baseRevision: 2, document: { items: {}, schema: 1 } },
+    headers: { Authorization: 'Bearer test-token' },
+    method: 'POST',
+    url: 'https://sync.example.test/v1/snapshot',
+  });
+
+  assert.equal(seen.method, 'POST');
+  assert.equal(seen.headers.Authorization, 'Bearer test-token');
+  assert.equal(seen.headers['Content-Type'], 'application/json');
+  assert.equal(JSON.parse(seen.data).baseRevision, 2);
+  assert.deepEqual(result, {
+    body: { document: { items: {}, schema: 1 }, revision: 3 },
+    status: 409,
+  });
+});
+
 test('a valid changed artifact is stored with a safe fallback version', async () => {
   const values = new Map();
   const entries = makeListEntries();
@@ -701,7 +838,11 @@ test('binary lookup remains correct for underscore-prefixed and mixed-case handl
 test('metadata exposes the cross-platform interface required by Tampermonkey and iOS Userscripts', () => {
   assert.deepEqual(metadataValues('inject-into'), ['content']);
   assert.deepEqual(metadataValues('match'), ['https://x.com/*', 'https://twitter.com/*']);
-  assert.deepEqual(metadataValues('connect'), ['x.zuoluo.tv', 'pbs.twimg.com']);
+  assert.deepEqual(metadataValues('connect'), [
+    'x.zuoluo.tv',
+    'mxga-sync.1109.workers.dev',
+    'pbs.twimg.com',
+  ]);
   assert.match(
     metadataValues('require')[0],
     /^https:\/\/raw\.githubusercontent\.com\/kazuhikoarase\/qrcode-generator\/.*#sha256-/,
@@ -741,17 +882,31 @@ test('settings panel exposes a local multiline keyword editor that can be saved 
   assert.match(scriptText, /仅匹配推文正文/);
 });
 
+test('published userscript exposes public multi-device filter sync controls', () => {
+  assert.ok(metadataValues('connect').includes('mxga-sync.1109.workers.dev'));
+  assert.match(scriptText, /mxga:filter-sync:v1/);
+  assert.match(scriptText, /data-role="filter-sync-token"/);
+  assert.match(scriptText, /data-action="save-filter-sync"/);
+  assert.match(scriptText, /屏蔽词和账号列表公开可读/);
+  assert.match(scriptText, /scheduleFilterSync\(\)/);
+});
+
 test('published userscript offers an immediate block action for selected tweet text', () => {
   assert.match(scriptText, /role="toolbar" aria-label="选中文本操作"/);
-  assert.match(scriptText, /data-action="block-selection"/);
+  assert.match(scriptText, /data-action="block-selection">屏蔽<\/button>/);
+  assert.doesNotMatch(scriptText, />屏蔽所选文字<\/button>/);
   assert.match(scriptText, /callbacks\.onBlockKeyword\(keyword\)/);
   assert.match(scriptText, /getKeywordSelectionCandidate\(global\.getSelection\(\)\)/);
 });
 
-test('published userscript mounts a local block popover on tweet author avatars', () => {
+test('published userscript mounts a compact direct-block icon on tweet author avatars', () => {
   assert.match(scriptText, /\[data-testid="Tweet-User-Avatar"\] a\[href\]/);
   assert.match(scriptText, /data-mxga-avatar-trigger/);
-  assert.match(scriptText, /本地屏蔽该用户/);
+  assert.match(scriptText, /class="avatar-block"/);
+  assert.match(scriptText, /data-action="block-avatar"/);
+  assert.match(scriptText, /aria-label="屏蔽用户"/);
+  assert.match(scriptText, /callbacks\.onHide\(selected\.handle, selected\.entry\)/);
+  assert.doesNotMatch(scriptText, /账号操作浮窗/);
   assert.match(scriptText, /categoryText: '手动屏蔽'/);
 });
 

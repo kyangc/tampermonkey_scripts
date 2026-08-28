@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "mxga-sync",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-08-28",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mxga-sync",
+      "database_id": "54e33d90-d470-499a-a5c1-8953f215fdad",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

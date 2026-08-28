@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.4.0
-// @description  Quick-block selected phrases or users, hide spam, and generate share cards on X.
+// @version      0.5.0
+// @description  Quick-block and sync selected phrases or users, hide spam, and generate share cards on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
 // @source       https://github.com/foru17/make-x-great-again
@@ -21,6 +21,7 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM.openInTab
 // @connect      x.zuoluo.tv
+// @connect      mxga-sync.1109.workers.dev
 // @connect      pbs.twimg.com
 // @noframes
 // ==/UserScript==
@@ -64,6 +65,8 @@
   const MAX_META_BYTES = 64 * 1024;
   const LIST_STALE_MS = 6 * 60 * 60 * 1000;
   const SERVICE_BASE = 'https://x.zuoluo.tv';
+  const FILTER_SYNC_ENDPOINT = 'https://mxga-sync.1109.workers.dev';
+  const SYNC_SOURCE_RE = /^[A-Za-z0-9_-]{8,80}$/;
   const ARTIFACT_PATH_RE = /^\/v1\/artifacts\/[A-Za-z0-9._-]+$/;
   const ACCOUNT_CONTENT_SELECTOR =
     'article[data-testid="tweet"], [data-testid="UserCell"]';
@@ -75,6 +78,7 @@
     whitelist: 'mxga:whitelist:v1',
     settings: 'mxga:settings:v1',
     hidden: 'mxga:hidden:v1',
+    filterSync: 'mxga:filter-sync:v1',
     syncLock: 'mxga:sync-lock:v1',
   };
 
@@ -629,6 +633,225 @@
     };
   }
 
+  function normalizeFilterDocument(value) {
+    const items = {};
+    const rows = value?.schema === 1 && value.items && typeof value.items === 'object'
+      ? Object.values(value.items)
+      : [];
+    for (const row of rows) {
+      if (
+        !row ||
+        !['handle', 'keyword'].includes(row.kind) ||
+        typeof row.deleted !== 'boolean' ||
+        !Number.isSafeInteger(row.updatedAt) ||
+        row.updatedAt <= 0 ||
+        typeof row.source !== 'string' ||
+        !row.source
+      ) {
+        continue;
+      }
+      if (row.kind === 'handle') {
+        const key = normalizeHandle(row.key);
+        if (!HANDLE_RE.test(key)) continue;
+        const record = row.deleted ? null : createHiddenRegistry([row.value]).list()[0];
+        if (!row.deleted && (!record || record.handle !== key)) continue;
+        items['handle:' + key] = {
+          deleted: row.deleted,
+          key,
+          kind: 'handle',
+          source: row.source,
+          updatedAt: row.updatedAt,
+          value: record,
+        };
+        continue;
+      }
+      const keyword = row.deleted ? '' : normalizeKeyword(row.value);
+      const key = normalizeMatchText(row.key || keyword);
+      if (!key || (!row.deleted && !keyword)) continue;
+      items['keyword:' + key] = {
+        deleted: row.deleted,
+        key,
+        kind: 'keyword',
+        order: Number.isSafeInteger(row.order) && row.order >= 0 ? row.order : 0,
+        source: row.source,
+        updatedAt: row.updatedAt,
+        value: keyword || null,
+      };
+    }
+    return { items, schema: 1 };
+  }
+
+  function filterItems(filters) {
+    const items = new Map();
+    normalizeKeywords(filters?.blockedKeywords).forEach((keyword, order) => {
+      const key = normalizeMatchText(keyword);
+      items.set('keyword:' + key, {
+        key,
+        kind: 'keyword',
+        order,
+        value: keyword,
+      });
+    });
+    for (const record of createHiddenRegistry(filters?.hiddenRecords).list()) {
+      items.set('handle:' + record.handle, {
+        key: record.handle,
+        kind: 'handle',
+        value: record,
+      });
+    }
+    return items;
+  }
+
+  function sameFilterItem(event, item) {
+    if (!event || event.deleted || event.kind !== item.kind || event.key !== item.key) return false;
+    if (item.kind === 'keyword') {
+      return event.value === item.value && event.order === item.order;
+    }
+    return JSON.stringify(event.value) === JSON.stringify(item.value);
+  }
+
+  function reconcileFilterDocument(documentValue, filters, options = {}) {
+    const document = normalizeFilterDocument(documentValue);
+    const desired = filterItems(filters);
+    const source = String(options.deviceId || '').trim();
+    if (!source) throw new Error('deviceId is required');
+    const latest = Math.max(0, ...Object.values(document.items).map((item) => item.updatedAt));
+    let updatedAt = Math.max(Number((options.now || Date.now)()) || 0, latest + 1);
+    const items = { ...document.items };
+
+    for (const [id, item] of desired) {
+      const existing = items[id];
+      if (sameFilterItem(existing, item)) continue;
+      items[id] = {
+        deleted: false,
+        ...item,
+        source,
+        updatedAt: updatedAt++,
+      };
+    }
+    for (const [id, existing] of Object.entries(items)) {
+      if (desired.has(id) || existing.deleted) continue;
+      items[id] = {
+        deleted: true,
+        key: existing.key,
+        kind: existing.kind,
+        order: existing.order || 0,
+        source,
+        updatedAt: updatedAt++,
+        value: null,
+      };
+    }
+    return { items, schema: 1 };
+  }
+
+  function mergeFilterDocuments(leftValue, rightValue) {
+    const left = normalizeFilterDocument(leftValue);
+    const right = normalizeFilterDocument(rightValue);
+    const items = { ...left.items };
+    for (const [id, candidate] of Object.entries(right.items)) {
+      const current = items[id];
+      if (
+        !current ||
+        candidate.updatedAt > current.updatedAt ||
+        (candidate.updatedAt === current.updatedAt && candidate.source > current.source)
+      ) {
+        items[id] = candidate;
+      }
+    }
+    return { items, schema: 1 };
+  }
+
+  function materializeFilterDocument(value) {
+    const document = normalizeFilterDocument(value);
+    const keywords = [];
+    const hiddenRecords = [];
+    for (const event of Object.values(document.items)) {
+      if (event.deleted) continue;
+      if (event.kind === 'keyword') keywords.push(event);
+      else if (event.value) hiddenRecords.push(event.value);
+    }
+    keywords.sort((left, right) => left.order - right.order || left.updatedAt - right.updatedAt);
+    hiddenRecords.sort((left, right) => right.hiddenAt - left.hiddenAt);
+    return {
+      blockedKeywords: keywords.map((event) => event.value),
+      hiddenRecords,
+    };
+  }
+
+  function serializeFilterDocument(value) {
+    const document = normalizeFilterDocument(value);
+    const items = {};
+    for (const key of Object.keys(document.items).sort()) items[key] = document.items[key];
+    return JSON.stringify({ items, schema: 1 });
+  }
+
+  function createFilterSynchronizer(options) {
+    const requestJson = options.requestJson;
+    const endpoint = String(options.endpoint || '').replace(/\/+$/, '');
+    if (!endpoint || typeof requestJson !== 'function') {
+      throw new Error('filter synchronizer requires endpoint and requestJson');
+    }
+
+    async function sync(localState) {
+      const token = String(localState?.token || '').trim();
+      if (token.length < 20) throw new Error('同步密钥格式不正确。');
+      const fetched = await requestJson({
+        headers: { Accept: 'application/json' },
+        method: 'GET',
+        url: endpoint + '/v1/snapshot',
+      });
+      if (fetched?.status !== 200) {
+        throw new Error(fetched?.body?.error?.message || '无法读取同步列表。');
+      }
+
+      let revision = Number(fetched.body?.revision) || 0;
+      let document = mergeFilterDocuments(localState?.document, fetched.body?.document);
+      let remote = normalizeFilterDocument(fetched.body?.document);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (serializeFilterDocument(document) === serializeFilterDocument(remote)) {
+          return { document, revision };
+        }
+        const response = await requestJson({
+          body: { baseRevision: revision, document },
+          headers: {
+            Accept: 'application/json',
+            Authorization: 'Bearer ' + token,
+            'Content-Type': 'application/json',
+          },
+          method: 'POST',
+          url: endpoint + '/v1/snapshot',
+        });
+        if (response?.status >= 200 && response.status < 300) {
+          return { document, revision: Number(response.body?.revision) || revision + 1 };
+        }
+        if (response?.status !== 409) {
+          throw new Error(response?.body?.error?.message || '同步列表写入失败。');
+        }
+        revision = Number(response.body?.revision) || revision;
+        remote = normalizeFilterDocument(response.body?.document);
+        document = mergeFilterDocuments(document, remote);
+      }
+      throw new Error('同步冲突次数过多，请稍后重试。');
+    }
+
+    return { sync };
+  }
+
+  function normalizeFilterSyncState(value) {
+    const revision = Number(value?.revision);
+    const lastSyncAt = Number(value?.lastSyncAt);
+    const deviceId = SYNC_SOURCE_RE.test(value?.deviceId || '') ? value.deviceId : '';
+    const token = typeof value?.token === 'string' ? value.token.trim().slice(0, 256) : '';
+    return {
+      deviceId,
+      document: normalizeFilterDocument(value?.document),
+      lastSyncAt: Number.isFinite(lastSyncAt) && lastSyncAt > 0 ? lastSyncAt : 0,
+      revision: Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
+      schema: 1,
+      token,
+    };
+  }
+
   function findProfileNameBlock(root, handle) {
     if (!root || typeof root.querySelector !== 'function') return null;
     const standardNameBlock = root.querySelector('[data-testid="UserName"]');
@@ -730,7 +953,9 @@
     collectMutationScanItems,
     consumeBackdropClick,
     createAccountIndex,
+    createFilterSynchronizer,
     createHiddenRegistry,
+    createJsonRequestAdapter,
     createListSynchronizer,
     createRequestAdapter,
     decodeEntry,
@@ -745,10 +970,15 @@
     getKeywordSelectionCandidate,
     isListStale,
     LIST_STALE_MS,
+    materializeFilterDocument,
+    mergeFilterDocuments,
+    normalizeFilterDocument,
+    normalizeFilterSyncState,
     normalizeSettings,
     normalizeHandle,
     normalizeKeywords,
     readStoredList,
+    reconcileFilterDocument,
     STORAGE_KEYS,
     validateLiteArtifact,
     validateWhitelist,
@@ -773,6 +1003,12 @@
   const UPSTREAM_URL = 'https://github.com/foru17/make-x-great-again';
   const SOURCE_URL =
     'https://github.com/kyangc/tampermonkey_scripts/blob/main/scripts/make-x-great-again.user.js';
+
+  function createFilterDeviceId() {
+    const bytes = new Uint8Array(10);
+    global.crypto.getRandomValues(bytes);
+    return 'device-' + [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
+  }
 
   function normalizeSettings(raw) {
     return {
@@ -841,6 +1077,48 @@
             : '';
       if (byteLength(text) > maxBytes) throw new Error('response too large');
       return text;
+    };
+  }
+
+  function createJsonRequestAdapter(gm) {
+    if (!gm || typeof gm.xmlHttpRequest !== 'function') {
+      throw new Error('当前 userscript 管理器没有提供 GM.xmlHttpRequest');
+    }
+    return async function requestJson(options) {
+      const method = String(options?.method || 'GET').toUpperCase();
+      const headers = { ...(options?.headers || {}) };
+      const request = {
+        method,
+        url: options?.url,
+        headers,
+        responseType: 'text',
+        timeout: 30000,
+      };
+      if (options?.body !== undefined) {
+        headers['Content-Type'] = 'application/json';
+        request.data = JSON.stringify(options.body);
+      }
+      let response;
+      try {
+        response = await gm.xmlHttpRequest(request);
+      } catch (error) {
+        throw new Error(errorMessage(error, '无法连接多端同步服务。'));
+      }
+      const text = typeof response?.responseText === 'string'
+        ? response.responseText
+        : typeof response?.response === 'string'
+          ? response.response
+          : '';
+      if (byteLength(text) > 1024 * 1024) throw new Error('同步响应超过大小限制。');
+      let body = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch (_error) {
+          throw new Error('同步服务返回了无法解析的响应。');
+        }
+      }
+      return { body, status: Number(response?.status) || 0 };
     };
   }
 
@@ -939,6 +1217,9 @@
     '.keyword-editor{display:block;width:100%;min-height:112px;padding:10px 11px;resize:vertical;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--text);line-height:1.5}',
     '.keyword-editor:focus{border-color:var(--blue);outline:2px solid rgba(29,155,240,.2)}',
     '.keyword-actions{margin:8px 0 0}',
+    '.sync-token{display:block;width:100%;height:38px;padding:8px 11px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--text)}',
+    '.sync-token:focus{border-color:var(--blue);outline:2px solid rgba(29,155,240,.2)}',
+    '.sync-actions{flex-wrap:wrap;margin:8px 0 0}',
     '.empty{margin:8px 0;color:var(--muted);font-size:12px}',
     '.hidden-list{display:grid;gap:7px;max-height:220px;overflow:auto}',
     '.hidden-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:11px;background:var(--soft)}',
@@ -958,13 +1239,16 @@
     '.tag.auto{background:rgba(245,158,11,.13);color:#fbbf24}',
     '.popover-copy{margin:8px 0 12px;color:var(--muted);font-size:12px;line-height:1.6}',
     '.popover-actions{display:flex;flex-wrap:wrap;gap:8px}',
-    '.selection-toolbar{position:fixed;z-index:2147483005;display:flex;padding:5px;border:1px solid var(--line);border-radius:12px;background:rgba(22,24,28,.99);box-shadow:0 12px 36px rgba(0,0,0,.45);transform:translateX(-50%)}',
-    '.selection-toolbar .button{min-height:34px;padding:6px 11px}',
+    '.avatar-block{position:fixed;z-index:2147483005;display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid rgba(244,33,46,.65);border-radius:999px;background:rgba(22,24,28,.96);color:#ff6670;box-shadow:0 4px 14px rgba(0,0,0,.38);cursor:pointer}',
+    '.avatar-block:hover{background:#f4212e;color:white}',
+    '.avatar-block svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-width:2}',
+    '.selection-toolbar{position:fixed;z-index:2147483005;display:flex;padding:3px;border:1px solid var(--line);border-radius:10px;background:rgba(22,24,28,.99);box-shadow:0 8px 24px rgba(0,0,0,.42);transform:translateX(-50%)}',
+    '.selection-toolbar .button{min-height:28px;padding:4px 9px;font-size:12px}',
     '.toast{position:fixed;z-index:2147483005;left:50%;bottom:max(72px,calc(env(safe-area-inset-bottom) + 68px));transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);padding:10px 12px;border:1px solid var(--line);border-radius:999px;background:#202327;color:var(--text);box-shadow:0 10px 35px rgba(0,0,0,.45)}',
     '.toast span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.toast button{flex:none;padding:4px 8px;border:0;background:none;color:#8ecdf8;font-weight:750;cursor:pointer}',
     '@keyframes pulse{50%{opacity:.45}}',
-    '@media(prefers-color-scheme:light){:host{color-scheme:light;--bg:#fff;--panel:#fff;--soft:#f2f4f5;--line:#d8dee3;--text:#0f1419;--muted:#536471}.control{background:rgba(255,255,255,.95);box-shadow:0 8px 30px rgba(15,20,25,.16)}.control:hover{border-color:#aab4bc;background:#eef1f3}.button:hover,.icon-button:hover{border-color:#aab4bc;background:#e5eaed}.panel,.panel-header,.popover,.selection-toolbar{background:rgba(255,255,255,.98)}.notice{background:#f7f9f9}.toast{background:white}}',
+    '@media(prefers-color-scheme:light){:host{color-scheme:light;--bg:#fff;--panel:#fff;--soft:#f2f4f5;--line:#d8dee3;--text:#0f1419;--muted:#536471}.control{background:rgba(255,255,255,.95);box-shadow:0 8px 30px rgba(15,20,25,.16)}.control:hover{border-color:#aab4bc;background:#eef1f3}.button:hover,.icon-button:hover{border-color:#aab4bc;background:#e5eaed}.panel,.panel-header,.popover,.selection-toolbar{background:rgba(255,255,255,.98)}.avatar-block{background:rgba(255,255,255,.98)}.avatar-block:hover{background:#f4212e}.notice{background:#f7f9f9}.toast{background:white}}',
     '@media(max-width:600px),(hover:none){.control{min-height:46px;bottom:max(64px,calc(env(safe-area-inset-bottom) + 56px))}.panel{left:8px;right:8px;bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px));width:auto;max-height:72vh;max-height:min(72dvh,720px);border-radius:20px}.button{min-height:44px}.icon-button{width:42px;height:42px}.popover{left:8px!important;right:8px!important;top:auto!important;bottom:max(8px,env(safe-area-inset-bottom));width:auto;border-radius:20px;padding:16px}.selection-toolbar{max-width:calc(100vw - 16px)}.toast{bottom:max(118px,calc(env(safe-area-inset-bottom) + 110px))}}',
     '@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}',
   ].join('\n');
@@ -1016,17 +1300,24 @@
       '<textarea class="keyword-editor" data-role="blocked-keywords" aria-label="关键词屏蔽列表" placeholder="每行一个关键词或完整短语" spellcheck="false"></textarea>',
       '<div class="actions keyword-actions"><button class="button" type="button" data-action="save-keywords">保存并应用</button></div>',
       '</section>',
+      '<section class="section">',
+      '<div class="section-heading"><h3>多端同步</h3><span data-role="filter-sync-status">未连接</span></div>',
+      '<p class="keyword-help">屏蔽词和账号列表公开可读；同步密钥只用于防止他人写入。在其他设备粘贴同一个密钥即可合并。</p>',
+      '<input class="sync-token" type="password" data-role="filter-sync-token" aria-label="多端同步密钥" placeholder="粘贴同步密钥" autocomplete="off" spellcheck="false">',
+      '<div class="actions sync-actions"><button class="button" type="button" data-action="save-filter-sync">保存并同步</button><button class="button" type="button" data-action="sync-filters" hidden>立即同步</button><button class="button" type="button" data-action="disconnect-filter-sync" hidden>断开</button></div>',
+      '</section>',
       '<div class="actions"><button class="button primary" type="button" data-action="sync">立即更新名单</button></div>',
       '<section class="section">',
       '<div class="section-heading"><h3>本地隐藏记录</h3><span data-role="hidden-count">0 个</span></div>',
       '<div class="hidden-list" data-role="hidden-list"></div>',
       '</section>',
-      '<p class="privacy">公开名单、关键词和隐藏记录都只在本机匹配或保存；不会上传你浏览的页面、X 账号或命中结果。人工确认条目可自动隐藏，自动收录条目只做提示；不会执行 X 原生静音或拉黑。</p>',
+      '<p class="privacy">未启用多端同步时，关键词和隐藏记录只保存在本机；启用后仅上传这两份公开配置，不上传浏览页面、当前 X 账号或命中结果。不会执行 X 原生静音或拉黑。</p>',
       '<div class="links"><button class="link-button" type="button" data-action="open-upstream">上游项目 ↗</button><button class="link-button" type="button" data-action="open-source">本脚本源码 ↗</button></div>',
       '</div>',
       '</section>',
       '<section class="popover" data-role="popover" hidden aria-label="账号操作"></section>',
-      '<section class="selection-toolbar" data-role="selection-toolbar" role="toolbar" aria-label="选中文本操作" hidden><button class="button danger" type="button" data-action="block-selection">屏蔽所选文字</button></section>',
+      '<button class="avatar-block" type="button" data-role="avatar-block" data-action="block-avatar" aria-label="屏蔽用户" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M6.5 6.5l11 11"></path></svg></button>',
+      '<section class="selection-toolbar" data-role="selection-toolbar" role="toolbar" aria-label="选中文本操作" hidden><button class="button danger" type="button" data-action="block-selection">屏蔽</button></section>',
       '<div class="toast" data-role="toast" hidden role="status" aria-live="polite"><span data-role="toast-text"></span><button type="button" data-action="undo">撤销</button></div>',
     ].join('');
     root.appendChild(shell);
@@ -1047,10 +1338,16 @@
       hideConfirmed: root.querySelector('[data-role="hide-confirmed"]'),
       keywordCount: root.querySelector('[data-role="keyword-count"]'),
       blockedKeywords: root.querySelector('[data-role="blocked-keywords"]'),
+      filterSyncStatus: root.querySelector('[data-role="filter-sync-status"]'),
+      filterSyncToken: root.querySelector('[data-role="filter-sync-token"]'),
+      saveFilterSync: root.querySelector('[data-action="save-filter-sync"]'),
+      syncFilters: root.querySelector('[data-action="sync-filters"]'),
+      disconnectFilterSync: root.querySelector('[data-action="disconnect-filter-sync"]'),
       sync: root.querySelector('[data-action="sync"]'),
       hiddenCount: root.querySelector('[data-role="hidden-count"]'),
       hiddenList: root.querySelector('[data-role="hidden-list"]'),
       popover: root.querySelector('[data-role="popover"]'),
+      avatarBlock: root.querySelector('[data-role="avatar-block"]'),
       selectionToolbar: root.querySelector('[data-role="selection-toolbar"]'),
       blockSelection: root.querySelector('[data-action="block-selection"]'),
       toast: root.querySelector('[data-role="toast"]'),
@@ -1059,8 +1356,10 @@
     elements.subtitle.textContent = environment;
 
     let currentPopover = null;
+    let currentAvatar = null;
     let currentSelectionKeyword = '';
     const avatarContexts = new WeakMap();
+    let avatarTimer = 0;
     let popoverTimer = 0;
     let toastTimer = 0;
     let undoHandle = '';
@@ -1071,6 +1370,7 @@
       elements.control.setAttribute('aria-expanded', String(open));
       if (open) {
         closePopover();
+        hideAvatarBlock();
         hideSelectionToolbar();
       }
     }
@@ -1093,6 +1393,37 @@
       popoverTimer = global.setTimeout(closePopover, 160);
     }
 
+    function cancelAvatarClose() {
+      global.clearTimeout(avatarTimer);
+    }
+
+    function hideAvatarBlock() {
+      cancelAvatarClose();
+      elements.avatarBlock.hidden = true;
+      currentAvatar = null;
+      global.removeEventListener('scroll', hideAvatarBlock, true);
+    }
+
+    function scheduleAvatarClose() {
+      cancelAvatarClose();
+      avatarTimer = global.setTimeout(hideAvatarBlock, 140);
+    }
+
+    function showAvatarBlock(anchor, context) {
+      if (!context?.handle) return;
+      cancelAvatarClose();
+      closePopover();
+      currentAvatar = context;
+      elements.avatarBlock.title = '屏蔽 @' + context.handle;
+      elements.avatarBlock.hidden = false;
+      const rect = anchor.getBoundingClientRect();
+      elements.avatarBlock.style.left =
+        Math.min(Math.max(4, rect.right - 17), Math.max(4, global.innerWidth - 30)) + 'px';
+      elements.avatarBlock.style.top =
+        Math.min(Math.max(4, rect.top - 7), Math.max(4, global.innerHeight - 30)) + 'px';
+      global.addEventListener('scroll', hideAvatarBlock, { capture: true, passive: true });
+    }
+
     function hideSelectionToolbar() {
       elements.selectionToolbar.hidden = true;
       currentSelectionKeyword = '';
@@ -1111,11 +1442,11 @@
         Math.max(92, rect.left + rect.width / 2),
         Math.max(92, global.innerWidth - 92),
       );
-      let desiredTop = rect.top - 50;
+      let desiredTop = rect.top - 40;
       if (desiredTop < 8) desiredTop = rect.bottom + 8;
       elements.selectionToolbar.style.left = desiredLeft + 'px';
       elements.selectionToolbar.style.top =
-        Math.min(Math.max(8, desiredTop), Math.max(8, global.innerHeight - 54)) + 'px';
+        Math.min(Math.max(8, desiredTop), Math.max(8, global.innerHeight - 40)) + 'px';
     }
 
     function addTextElement(parent, tag, className, text) {
@@ -1207,14 +1538,14 @@
       avatarContexts.set(anchor, { handle: normalizeHandle(handle), entry });
       if (anchor.hasAttribute?.('data-mxga-avatar-trigger')) return;
       anchor.setAttribute?.('data-mxga-avatar-trigger', '1');
-      const open = () => {
+      const show = () => {
         const context = avatarContexts.get(anchor);
-        if (context?.handle) openPopover(anchor, context.handle, context.entry);
+        if (context?.handle) showAvatarBlock(anchor, context);
       };
       anchor.addEventListener('mouseenter', () => {
-        if (global.matchMedia?.('(hover:hover) and (pointer:fine)').matches) open();
+        if (global.matchMedia?.('(hover:hover) and (pointer:fine)').matches) show();
       });
-      anchor.addEventListener('mouseleave', schedulePopoverClose);
+      anchor.addEventListener('mouseleave', scheduleAvatarClose);
     }
 
     function renderHidden(records) {
@@ -1259,6 +1590,24 @@
       if (root.activeElement !== elements.blockedKeywords) {
         elements.blockedKeywords.value = view.settings.blockedKeywords.join('\n');
       }
+      const filterSync = view.filterSync || {};
+      const filterSyncConfigured = Boolean(filterSync.token);
+      if (root.activeElement !== elements.filterSyncToken) {
+        elements.filterSyncToken.value = filterSync.token || '';
+      }
+      elements.filterSyncStatus.textContent = filterSync.syncing
+        ? '同步中…'
+        : filterSync.error
+          ? '同步失败'
+          : filterSyncConfigured
+            ? formatTime(filterSync.lastSyncAt)
+            : '未连接';
+      elements.filterSyncStatus.title = filterSync.error || '';
+      elements.saveFilterSync.disabled = Boolean(filterSync.syncing);
+      elements.syncFilters.hidden = !filterSyncConfigured;
+      elements.syncFilters.disabled = Boolean(filterSync.syncing);
+      elements.disconnectFilterSync.hidden = !filterSyncConfigured;
+      elements.disconnectFilterSync.disabled = Boolean(filterSync.syncing);
       elements.sync.disabled = Boolean(view.syncing);
       elements.sync.textContent = view.syncing ? '正在更新…' : '立即更新名单';
       elements.notice.className = 'notice' + (phase === 'loading' || phase === 'error' ? ' ' + phase : '');
@@ -1291,6 +1640,8 @@
 
     elements.popover.addEventListener('mouseenter', cancelPopoverClose);
     elements.popover.addEventListener('mouseleave', schedulePopoverClose);
+    elements.avatarBlock.addEventListener('mouseenter', cancelAvatarClose);
+    elements.avatarBlock.addEventListener('mouseleave', scheduleAvatarClose);
     root.addEventListener('click', (event) => {
       if (consumeBackdropClick(event, elements.backdrop)) {
         setPanel(false);
@@ -1303,6 +1654,13 @@
       else if (action === 'close-panel') setPanel(false);
       else if (action === 'close-popover') closePopover();
       else if (action === 'sync') callbacks.onSync();
+      else if (action === 'save-filter-sync') {
+        callbacks.onFilterSyncTokenChange(elements.filterSyncToken.value);
+      } else if (action === 'sync-filters') callbacks.onFilterSync();
+      else if (action === 'disconnect-filter-sync') {
+        elements.filterSyncToken.value = '';
+        callbacks.onFilterSyncTokenChange('');
+      }
       else if (action === 'save-keywords') {
         callbacks.onBlockedKeywordsChange(elements.blockedKeywords.value);
       } else if (action === 'block-selection' && currentSelectionKeyword) {
@@ -1310,6 +1668,10 @@
         hideSelectionToolbar();
         global.getSelection()?.removeAllRanges();
         callbacks.onBlockKeyword(keyword);
+      } else if (action === 'block-avatar' && currentAvatar) {
+        const selected = currentAvatar;
+        hideAvatarBlock();
+        callbacks.onHide(selected.handle, selected.entry);
       } else if (action === 'restore') callbacks.onRestore(target.dataset.handle || '');
       else if (action === 'hide-current' && currentPopover) {
         const selected = currentPopover;
@@ -1336,6 +1698,7 @@
     return {
       cancelPopoverClose,
       closePopover,
+      hideAvatarBlock,
       hideSelectionToolbar,
       host,
       mountAvatarTrigger,
@@ -1599,12 +1962,21 @@
     const gm = typeof GM === 'object' && GM ? GM : global.GM;
     const storage = createStorageAdapter(gm);
     const requestText = createRequestAdapter(gm);
+    const requestJson = createJsonRequestAdapter(gm);
     const synchronizer = createListSynchronizer({ requestText, storage });
-    const [storedSettings, storedHidden, cached] = await Promise.all([
+    const filterSynchronizer = createFilterSynchronizer({
+      endpoint: FILTER_SYNC_ENDPOINT,
+      requestJson,
+    });
+    const [storedSettings, storedHidden, cached, storedFilterSync] = await Promise.all([
       storage.get(STORAGE_KEYS.settings, DEFAULT_SETTINGS),
       storage.get(STORAGE_KEYS.hidden, []),
       readStoredList(storage),
+      storage.get(STORAGE_KEYS.filterSync, null),
     ]);
+
+    const filterSync = normalizeFilterSyncState(storedFilterSync);
+    if (!filterSync.deviceId) filterSync.deviceId = createFilterDeviceId();
 
     const state = {
       settings: normalizeSettings(storedSettings),
@@ -1616,11 +1988,27 @@
       index: createAccountIndex(cached.entries, cached.whitelistEntries),
       syncing: false,
       error: cached.error,
+      filterSync,
+      filterSyncing: false,
+      filterSyncError: '',
     };
+    if (state.filterSync.token) {
+      state.filterSync.document = reconcileFilterDocument(
+        state.filterSync.document,
+        {
+          blockedKeywords: state.settings.blockedKeywords,
+          hiddenRecords: state.hidden.list(),
+        },
+        { deviceId: state.filterSync.deviceId },
+      );
+    }
 
     let scanner;
     let ui;
     let syncPromise = null;
+    let filterSyncPromise = null;
+    let filterSyncTimer = 0;
+    let filterSyncQueued = false;
     const lockOwner =
       Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 
@@ -1631,6 +2019,11 @@
         meta: state.meta,
         settings: state.settings,
         hiddenRecords: state.hidden.list(),
+        filterSync: {
+          ...state.filterSync,
+          error: state.filterSyncError,
+          syncing: state.filterSyncing,
+        },
         syncing: state.syncing,
         error: state.error,
       });
@@ -1639,9 +2032,11 @@
     async function persistHidden() {
       try {
         await storage.set(STORAGE_KEYS.hidden, state.hidden.list());
+        return true;
       } catch (error) {
         state.error = '隐藏记录保存失败：' + errorMessage(error);
         render();
+        return false;
       }
     }
 
@@ -1649,7 +2044,7 @@
       if (!state.hidden.restore(handle)) return;
       scanner.restoreVisible(handle);
       render();
-      await persistHidden();
+      if (await persistHidden()) await recordFilterChange();
     }
 
     async function hideHandle(handle, entry) {
@@ -1661,15 +2056,19 @@
       scanner.hideVisible(handle);
       ui.showUndo(handle);
       render();
-      await persistHidden();
+      if (await persistHidden()) await recordFilterChange();
     }
 
     async function updateSettings(patch) {
+      const previousKeywords = state.settings.blockedKeywords.join('\n');
       state.settings = normalizeSettings({ ...state.settings, ...patch });
       render();
       scanner.schedule();
       try {
         await storage.set(STORAGE_KEYS.settings, state.settings);
+        if (state.settings.blockedKeywords.join('\n') !== previousKeywords) {
+          await recordFilterChange();
+        }
       } catch (error) {
         state.error = '设置保存失败：' + errorMessage(error);
         render();
@@ -1680,6 +2079,128 @@
       await updateSettings({
         blockedKeywords: [...state.settings.blockedKeywords, keyword],
       });
+    }
+
+    function currentFilters() {
+      return {
+        blockedKeywords: state.settings.blockedKeywords,
+        hiddenRecords: state.hidden.list(),
+      };
+    }
+
+    async function persistFilterSync() {
+      await storage.set(STORAGE_KEYS.filterSync, normalizeFilterSyncState(state.filterSync));
+    }
+
+    async function recordFilterChange() {
+      if (!state.filterSync.token) return;
+      state.filterSync.document = reconcileFilterDocument(
+        state.filterSync.document,
+        currentFilters(),
+        { deviceId: state.filterSync.deviceId },
+      );
+      try {
+        await persistFilterSync();
+        scheduleFilterSync();
+      } catch (error) {
+        state.filterSyncError = '同步状态保存失败：' + errorMessage(error);
+        render();
+      }
+    }
+
+    async function performFilterSync() {
+      if (!state.filterSync.token) return;
+      state.filterSyncing = true;
+      state.filterSyncError = '';
+      render();
+      try {
+        state.filterSync.document = reconcileFilterDocument(
+          state.filterSync.document,
+          currentFilters(),
+          { deviceId: state.filterSync.deviceId },
+        );
+        await persistFilterSync();
+        const result = await filterSynchronizer.sync(state.filterSync);
+        const document = mergeFilterDocuments(result.document, state.filterSync.document);
+        const needsAnotherPush =
+          serializeFilterDocument(document) !== serializeFilterDocument(result.document);
+        const filters = materializeFilterDocument(document);
+        state.filterSync.document = document;
+        state.filterSync.revision = result.revision;
+        state.filterSync.lastSyncAt = Date.now();
+        state.settings = normalizeSettings({
+          ...state.settings,
+          blockedKeywords: filters.blockedKeywords,
+        });
+        state.hidden = createHiddenRegistry(filters.hiddenRecords);
+        await Promise.all([
+          storage.set(STORAGE_KEYS.settings, state.settings),
+          storage.set(STORAGE_KEYS.hidden, state.hidden.list()),
+          persistFilterSync(),
+        ]);
+        scanner.schedule();
+        if (needsAnotherPush) filterSyncQueued = true;
+      } catch (error) {
+        state.filterSyncError = errorMessage(error, '多端同步失败');
+      } finally {
+        state.filterSyncing = false;
+        render();
+      }
+    }
+
+    function syncFiltersNow() {
+      if (!state.filterSync.token) return Promise.resolve();
+      if (filterSyncPromise) {
+        filterSyncQueued = true;
+        return filterSyncPromise;
+      }
+      filterSyncPromise = performFilterSync().finally(() => {
+        filterSyncPromise = null;
+        if (filterSyncQueued) {
+          filterSyncQueued = false;
+          scheduleFilterSync(80);
+        }
+      });
+      return filterSyncPromise;
+    }
+
+    function scheduleFilterSync(delay = 700) {
+      global.clearTimeout(filterSyncTimer);
+      filterSyncTimer = global.setTimeout(() => {
+        void syncFiltersNow();
+      }, delay);
+    }
+
+    async function configureFilterSync(tokenValue) {
+      const token = String(tokenValue || '').trim();
+      if (token && token.length < 20) {
+        state.filterSyncError = '同步密钥格式不正确。';
+        render();
+        return;
+      }
+      try {
+        global.clearTimeout(filterSyncTimer);
+        state.filterSync.token = token;
+        state.filterSyncError = '';
+        if (!token) {
+          state.filterSync.revision = 0;
+          state.filterSync.lastSyncAt = 0;
+          await persistFilterSync();
+          render();
+          return;
+        }
+        state.filterSync.document = reconcileFilterDocument(
+          state.filterSync.document,
+          currentFilters(),
+          { deviceId: state.filterSync.deviceId },
+        );
+        await persistFilterSync();
+        render();
+        await syncFiltersNow();
+      } catch (error) {
+        state.filterSyncError = errorMessage(error, '同步配置保存失败');
+        render();
+      }
     }
 
     async function acquireSyncLock() {
@@ -1815,6 +2336,12 @@
         onBlockKeyword: (keyword) => {
           void blockKeyword(keyword);
         },
+        onFilterSync: () => {
+          void syncFiltersNow();
+        },
+        onFilterSyncTokenChange: (token) => {
+          void configureFilterSync(token);
+        },
         onHide: (handle, entry) => {
           void hideHandle(handle, entry);
         },
@@ -1872,7 +2399,10 @@
     });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
-      void reloadStoredState().then(syncIfStale).catch((error) => {
+      void reloadStoredState().then(() => Promise.all([
+        syncIfStale(),
+        syncFiltersNow(),
+      ])).catch((error) => {
         state.error = errorMessage(error, '名单状态恢复失败');
         render();
       });
@@ -1881,9 +2411,11 @@
       if (document.visibilityState !== 'visible') return;
       scanner.schedule();
       void syncIfStale();
+      if (Date.now() - state.filterSync.lastSyncAt >= 30000) void syncFiltersNow();
     }, 15000);
 
     void syncIfStale();
+    void syncFiltersNow();
   }
 
   void bootstrap().catch((error) => {

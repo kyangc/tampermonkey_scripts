@@ -119,7 +119,7 @@ test('confirmed-hit visibility defaults to hidden and can be temporarily switche
   const automatic = core.decodeEntry(['', 'AutoListed', 'spa']);
   const defaults = core.normalizeSettings({});
 
-  assert.deepEqual(defaults, { enabled: true, hideConfirmed: true });
+  assert.deepEqual(defaults, { enabled: true, hideConfirmed: true, blockedKeywords: [] });
   assert.equal(
     core.getAccountVisibility({ entry: confirmed, settings: defaults }),
     'hidden',
@@ -151,6 +151,55 @@ test('confirmed-hit visibility defaults to hidden and can be temporarily switche
     }),
     'shown',
   );
+});
+
+test('keyword blocking normalizes user settings and matches tweet text without case or spacing differences', () => {
+  const settings = core.normalizeSettings({
+    blockedKeywords: [' Great   insight ', '私信了解', 'great insight', '', 42],
+  });
+
+  assert.deepEqual(settings.blockedKeywords, ['Great insight', '私信了解']);
+  assert.deepEqual(
+    core.normalizeSettings({ blockedKeywords: 'Great insight\n私信了解\ngreat insight' })
+      .blockedKeywords,
+    ['Great insight', '私信了解'],
+  );
+  assert.equal(
+    core.findBlockedKeyword('This is a GREAT\nINSIGHT — send me a DM.', settings.blockedKeywords),
+    'Great insight',
+  );
+  assert.equal(core.findBlockedKeyword('欢迎私信了解详情', settings.blockedKeywords), '私信了解');
+  assert.equal(core.findBlockedKeyword('A specific, ordinary reply.', settings.blockedKeywords), null);
+});
+
+test('keyword blocking inspects only the tweet body rendered by X', () => {
+  const tweet = {
+    textContent: 'Specific reply — great insight!',
+    closest: () => null,
+  };
+  const quotedRoot = {
+    querySelector: (selector) => selector.includes('User-Name') ? {} : null,
+  };
+  const quotedTweet = {
+    textContent: 'Card summary',
+    closest: (selector) => selector === '[role="link"]' ? quotedRoot : null,
+  };
+  const item = {
+    textContent: 'Blocked Author @blocked Specific reply — great insight! Card summary',
+    querySelector: (selector) => selector === '[data-testid="tweetText"]' ? tweet : null,
+    querySelectorAll: (selector) => selector === '[data-testid="tweetText"]'
+      ? [tweet, quotedTweet]
+      : [],
+  };
+
+  assert.equal(core.findBlockedKeywordInContent(item, ['great insight']), 'great insight');
+  assert.equal(core.findBlockedKeywordInContent(item, ['Blocked Author']), null);
+  assert.equal(core.findBlockedKeywordInContent(item, ['Card summary']), null);
+  assert.equal(core.findBlockedKeywordInContent({ querySelector: () => null }, ['blocked']), null);
+  assert.equal(core.findBlockedKeywordInContent({
+    querySelector: () => quotedTweet,
+    querySelectorAll: () => [quotedTweet],
+  }, ['Card summary']), null);
 });
 
 test('panel backdrop clicks are consumed so they close without reaching the page below', () => {
@@ -628,6 +677,13 @@ test('settings version metric stays on one line while retaining the full machine
     /\[data-role="version"\]\{[^}]*overflow:hidden;[^}]*text-overflow:ellipsis;[^}]*white-space:nowrap[^}]*\}/,
   );
   assert.match(scriptText, /elements\.version\.title\s*=\s*version;/);
+});
+
+test('settings panel exposes a local multiline keyword editor that can be saved and applied', () => {
+  assert.match(scriptText, /<textarea[^>]+data-role="blocked-keywords"/);
+  assert.match(scriptText, /data-action="save-keywords"/);
+  assert.match(scriptText, /callbacks\.onBlockedKeywordsChange\(elements\.blockedKeywords\.value\)/);
+  assert.match(scriptText, /仅匹配推文正文/);
 });
 
 test('userscript contains no X private API or page-world network client', () => {

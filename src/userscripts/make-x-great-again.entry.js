@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.2.4
-// @description  Mark public-list spam accounts and generate share cards on X across PC and iOS.
+// @version      0.3.0
+// @description  Hide spam accounts or keyword-matched posts and generate share cards on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
 // @source       https://github.com/foru17/make-x-great-again
@@ -336,6 +336,51 @@
     return typeof handle === 'string' ? handle.replace(/^@/, '').trim().toLowerCase() : '';
   }
 
+  function normalizeMatchText(value) {
+    return typeof value === 'string'
+      ? value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()
+      : '';
+  }
+
+  function normalizeKeywords(value) {
+    const rows = typeof value === 'string' ? value.split(/\r?\n/) : value;
+    const keywords = [];
+    const seen = new Set();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const keyword = typeof row === 'string' ? row.replace(/\s+/g, ' ').trim() : '';
+      const normalized = normalizeMatchText(keyword);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      keywords.push(keyword);
+    }
+    return keywords;
+  }
+
+  function findBlockedKeyword(text, keywords) {
+    const normalizedText = normalizeMatchText(text);
+    if (!normalizedText) return null;
+    for (const keyword of normalizeKeywords(keywords)) {
+      if (normalizedText.includes(normalizeMatchText(keyword))) return keyword;
+    }
+    return null;
+  }
+
+  function findBlockedKeywordInContent(item, keywords) {
+    const selector = '[data-testid="tweetText"]';
+    const tweetTexts = typeof item?.querySelectorAll === 'function'
+      ? Array.from(item.querySelectorAll(selector))
+      : [item?.querySelector?.(selector)].filter(Boolean);
+    const tweetText = tweetTexts.find((node) => {
+      const linkedCard = node?.closest?.('[role="link"]');
+      return !(
+        linkedCard &&
+        linkedCard !== item &&
+        linkedCard.querySelector?.('[data-testid="User-Name"], [data-testid="UserName"]')
+      );
+    });
+    return findBlockedKeyword(tweetText?.textContent || '', keywords);
+  }
+
   function compareHandles(left, right) {
     if (left === right) return 0;
     return left < right ? -1 : 1;
@@ -642,6 +687,8 @@
     decodeEntry,
     errorMessage,
     extractHandleFromHref,
+    findBlockedKeyword,
+    findBlockedKeywordInContent,
     findProfileNameBlock,
     getAccountPresentation,
     getAccountVisibility,
@@ -649,6 +696,7 @@
     LIST_STALE_MS,
     normalizeSettings,
     normalizeHandle,
+    normalizeKeywords,
     readStoredList,
     STORAGE_KEYS,
     validateLiteArtifact,
@@ -666,6 +714,7 @@
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     hideConfirmed: true,
+    blockedKeywords: Object.freeze([]),
   });
   const SYNC_LOCK_MS = 5 * 60 * 1000;
   const APPEAL_URL =
@@ -678,6 +727,7 @@
     return {
       enabled: raw?.enabled !== false,
       hideConfirmed: raw?.hideConfirmed !== false,
+      blockedKeywords: normalizeKeywords(raw?.blockedKeywords),
     };
   }
 
@@ -787,7 +837,7 @@
   const UI_STYLE = [
     ':host{all:initial;color-scheme:dark;--bg:#0f1419;--panel:#16181c;--soft:#202327;--line:#2f3336;--text:#e7e9ea;--muted:#8b98a5;--blue:#1d9bf0;--danger:#f4212e;--warn:#f59e0b;--ok:#00ba7c;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.45}',
     '*{box-sizing:border-box}',
-    'button,input{font:inherit}',
+    'button,input,textarea{font:inherit}',
     'button{touch-action:manipulation}',
     '[hidden]{display:none!important}',
     '.control{position:fixed;z-index:2147483000;right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:7px;min-height:42px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:rgba(15,20,25,.94);color:var(--text);box-shadow:0 8px 30px rgba(0,0,0,.35);cursor:pointer;backdrop-filter:blur(12px)}',
@@ -834,6 +884,10 @@
     '.section-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}',
     '.section-heading h3{margin:0;font-size:14px}',
     '.section-heading span{color:var(--muted);font-size:12px}',
+    '.keyword-help{margin:0 0 8px;color:var(--muted);font-size:12px;line-height:1.55}',
+    '.keyword-editor{display:block;width:100%;min-height:112px;padding:10px 11px;resize:vertical;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--text);line-height:1.5}',
+    '.keyword-editor:focus{border-color:var(--blue);outline:2px solid rgba(29,155,240,.2)}',
+    '.keyword-actions{margin:8px 0 0}',
     '.empty{margin:8px 0;color:var(--muted);font-size:12px}',
     '.hidden-list{display:grid;gap:7px;max-height:220px;overflow:auto}',
     '.hidden-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:11px;background:var(--soft)}',
@@ -903,12 +957,18 @@
       '<div class="setting-copy"><strong>隐藏明确命中内容</strong><span>关闭后临时显示，手动隐藏记录不变</span></div>',
       '<label class="switch"><input type="checkbox" data-role="hide-confirmed" aria-label="隐藏人工确认账号及其推文"><span></span></label>',
       '</div>',
+      '<section class="section">',
+      '<div class="section-heading"><h3>关键词屏蔽</h3><span data-role="keyword-count">0 个</span></div>',
+      '<p class="keyword-help">每行一个词或短语，大小写不敏感，仅匹配推文正文；留空即关闭。</p>',
+      '<textarea class="keyword-editor" data-role="blocked-keywords" aria-label="关键词屏蔽列表" placeholder="每行一个关键词或完整短语" spellcheck="false"></textarea>',
+      '<div class="actions keyword-actions"><button class="button" type="button" data-action="save-keywords">保存并应用</button></div>',
+      '</section>',
       '<div class="actions"><button class="button primary" type="button" data-action="sync">立即更新名单</button></div>',
       '<section class="section">',
       '<div class="section-heading"><h3>本地隐藏记录</h3><span data-role="hidden-count">0 个</span></div>',
       '<div class="hidden-list" data-role="hidden-list"></div>',
       '</section>',
-      '<p class="privacy">只下载公开名单并在本机匹配；不会上传你浏览的页面、X 账号、命中结果或隐藏记录。人工确认条目可按开关自动隐藏，自动收录条目只做提示；不会执行 X 原生静音或拉黑。</p>',
+      '<p class="privacy">公开名单、关键词和隐藏记录都只在本机匹配或保存；不会上传你浏览的页面、X 账号或命中结果。人工确认条目可自动隐藏，自动收录条目只做提示；不会执行 X 原生静音或拉黑。</p>',
       '<div class="links"><button class="link-button" type="button" data-action="open-upstream">上游项目 ↗</button><button class="link-button" type="button" data-action="open-source">本脚本源码 ↗</button></div>',
       '</div>',
       '</section>',
@@ -931,6 +991,8 @@
       fetchedAt: root.querySelector('[data-role="fetched-at"]'),
       enabled: root.querySelector('[data-role="enabled"]'),
       hideConfirmed: root.querySelector('[data-role="hide-confirmed"]'),
+      keywordCount: root.querySelector('[data-role="keyword-count"]'),
+      blockedKeywords: root.querySelector('[data-role="blocked-keywords"]'),
       sync: root.querySelector('[data-action="sync"]'),
       hiddenCount: root.querySelector('[data-role="hidden-count"]'),
       hiddenList: root.querySelector('[data-role="hidden-list"]'),
@@ -1084,6 +1146,10 @@
       elements.fetchedAt.textContent = formatTime(view.meta?.fetchedAt);
       elements.enabled.checked = view.settings.enabled;
       elements.hideConfirmed.checked = view.settings.hideConfirmed;
+      elements.keywordCount.textContent = view.settings.blockedKeywords.length + ' 个';
+      if (root.activeElement !== elements.blockedKeywords) {
+        elements.blockedKeywords.value = view.settings.blockedKeywords.join('\n');
+      }
       elements.sync.disabled = Boolean(view.syncing);
       elements.sync.textContent = view.syncing ? '正在更新…' : '立即更新名单';
       elements.notice.className = 'notice' + (phase === 'loading' || phase === 'error' ? ' ' + phase : '');
@@ -1128,7 +1194,9 @@
       else if (action === 'close-panel') setPanel(false);
       else if (action === 'close-popover') closePopover();
       else if (action === 'sync') callbacks.onSync();
-      else if (action === 'restore') callbacks.onRestore(target.dataset.handle || '');
+      else if (action === 'save-keywords') {
+        callbacks.onBlockedKeywordsChange(elements.blockedKeywords.value);
+      } else if (action === 'restore') callbacks.onRestore(target.dataset.handle || '');
       else if (action === 'hide-current' && currentPopover) {
         const selected = currentPopover;
         closePopover();
@@ -1320,7 +1388,10 @@
         locallyHidden: state.hidden.has(normalized),
       });
 
-      if (visibility === 'hidden') {
+      if (
+        visibility === 'hidden' ||
+        findBlockedKeywordInContent(item, state.settings.blockedKeywords)
+      ) {
         clearBadgeMounts(nameBlock);
         hideContentLocally(item, normalized);
         return;
@@ -1607,6 +1678,9 @@
         },
         onHideConfirmedChange: (hideConfirmed) => {
           void updateSettings({ hideConfirmed });
+        },
+        onBlockedKeywordsChange: (blockedKeywords) => {
+          void updateSettings({ blockedKeywords });
         },
         onHide: (handle, entry) => {
           void hideHandle(handle, entry);

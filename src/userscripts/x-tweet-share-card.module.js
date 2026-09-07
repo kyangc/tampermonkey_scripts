@@ -174,7 +174,22 @@
     const currentIndex = articles.indexOf(article);
     if (currentIndex < 0) return null;
 
-    if (currentStatusId === pageStatusId) return null;
+    if (currentStatusId === pageStatusId) {
+      // On a reply permalink, X renders its ancestor chain before the focused
+      // tweet. Require adjacent cells and the parent's avatar connector (the
+      // 2px-wide r-m5arl1 line), rather than guessing from document order.
+      const cell = article.closest?.('[data-testid="cellInnerDiv"]');
+      const previousCell = cell?.previousElementSibling;
+      const candidate = previousCell?.querySelector?.('article[data-testid="tweet"]');
+      if (!candidate || candidate.closest?.('[data-testid="cellInnerDiv"]') !== previousCell) {
+        return null;
+      }
+      const connector = candidate.querySelector('[data-testid="Tweet-User-Avatar"]')?.nextElementSibling;
+      if (!connector?.matches?.('.r-m5arl1')) return null;
+      const quoteRoot = findQuotedTweetRoot(candidate);
+      const candidateId = getStatusId(extractTweetFields(candidate, quoteRoot ? [quoteRoot] : []).statusUrl);
+      return candidateId && candidateId !== currentStatusId ? candidate : null;
+    }
 
     return articles.find((candidate) => {
       const quoteRoot = findQuotedTweetRoot(candidate);

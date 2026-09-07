@@ -372,50 +372,50 @@ test('extracts an X quoted tweet without mixing its text or images into the oute
   assert.deepEqual(extracted.context.tweet.mediaUrls, ['https://pbs.twimg.com/media/quote.jpg?name=large']);
 });
 
-test('uses a page status relationship for reply context and never guesses from the preceding tweet', () => {
-  const makeArticle = ({ name, handle, text, statusId }) => {
-    const statusAnchor = {
-      getAttribute: (attribute) => attribute === 'href' ? `/${handle}/status/${statusId}` : null,
-    };
-    const time = {
-      getAttribute: (attribute) => attribute === 'datetime' ? '2026-07-21T04:05:06.000Z' : null,
-      closest: () => statusAnchor,
-    };
-    const nameBlock = {
-      closest: () => null,
-      querySelector: () => null,
-      querySelectorAll: (selector) => selector === 'a[href]'
-        ? [{ textContent: name, getAttribute: () => `/${handle}` }]
-        : [{ textContent: `@${handle}` }],
-    };
-    const tweetText = { innerText: text, textContent: text, closest: () => null };
-    return {
-      querySelector: (selector) => ({
-        '[data-testid="User-Name"]': nameBlock,
-        '[data-testid="tweetText"]': tweetText,
-        'time[datetime]': time,
-      }[selector] || null),
-      querySelectorAll: (selector) => ({
-        '[data-testid="User-Name"], [data-testid="UserName"]': [nameBlock],
-        '[data-testid="tweetText"]': [tweetText],
-        'time[datetime]': [time],
-      }[selector] || []),
-    };
+const makeReplyArticle = ({ name, handle, text, statusId }) => {
+  const statusAnchor = {
+    getAttribute: (attribute) => attribute === 'href' ? `/${handle}/status/${statusId}` : null,
   };
+  const time = {
+    getAttribute: (attribute) => attribute === 'datetime' ? '2026-07-21T04:05:06.000Z' : null,
+    closest: () => statusAnchor,
+  };
+  const nameBlock = {
+    closest: () => null,
+    querySelector: () => null,
+    querySelectorAll: (selector) => selector === 'a[href]'
+      ? [{ textContent: name, getAttribute: () => `/${handle}` }]
+      : [{ textContent: `@${handle}` }],
+  };
+  const tweetText = { innerText: text, textContent: text, closest: () => null };
+  return {
+    querySelector: (selector) => ({
+      '[data-testid="User-Name"]': nameBlock,
+      '[data-testid="tweetText"]': tweetText,
+      'time[datetime]': time,
+    }[selector] || null),
+    querySelectorAll: (selector) => ({
+      '[data-testid="User-Name"], [data-testid="UserName"]': [nameBlock],
+      '[data-testid="tweetText"]': [tweetText],
+      'time[datetime]': [time],
+    }[selector] || []),
+  };
+};
 
-  const parent = makeArticle({
+test('uses a page status relationship for reply context and never guesses from the preceding tweet', () => {
+  const parent = makeReplyArticle({
     name: 'Original Author',
     handle: 'original',
     text: 'The complete parent post',
     statusId: '111',
   });
-  const reply = makeArticle({
+  const reply = makeReplyArticle({
     name: 'Reply Author',
     handle: 'reply_author',
     text: 'My reply',
     statusId: '222',
   });
-  const promoted = makeArticle({
+  const promoted = makeReplyArticle({
     name: 'Promoted Account',
     handle: 'promoted',
     text: 'Unrelated promoted post',
@@ -871,4 +871,41 @@ test('hides the loading layer after the generated preview becomes ready', () => 
 test('MXGA claims one share-card runtime per page', () => {
   assert.match(scriptText, /hasAttribute\('data-tsc-runtime-mounted'\)/);
   assert.match(scriptText, /setAttribute\('data-tsc-runtime-mounted', ''\)/);
+});
+
+test('includes the immediate connected parent when sharing the focused reply permalink', () => {
+  const ancestor = makeReplyArticle({ name: 'Ancestor', handle: 'ancestor', text: 'Thread root', statusId: '100' });
+  const parent = makeReplyArticle({ name: 'Darryl', handle: 'moonflyingoverc', text: 'The directly replied-to post', statusId: '2096844820346237249' });
+  const reply = makeReplyArticle({ name: 'Tibo', handle: 'thsottiaux', text: '你最牛了！', statusId: '2096847737153012204' });
+  const articles = [ancestor, parent, reply];
+  const ownerDocument = { querySelectorAll: () => articles };
+  for (const article of articles) article.ownerDocument = ownerDocument;
+  const line = { matches: (selector) => selector === '.r-m5arl1' };
+  const avatar = { nextElementSibling: line };
+  const originalQuery = parent.querySelector;
+  parent.querySelector = (selector) => selector === '[data-testid="Tweet-User-Avatar"]' ? avatar : originalQuery(selector);
+  const parentCell = { querySelector: () => parent };
+  const replyCell = { previousElementSibling: parentCell };
+  parent.closest = () => parentCell;
+  reply.closest = () => replyCell;
+  const options = { pageUrl: 'https://x.com/thsottiaux/status/2096847737153012204?s=20' };
+  const tweet = core.extractTweetData(reply, options);
+  assert.equal(tweet.context?.kind, 'reply');
+  assert.equal(tweet.context.tweet.handle, '@moonflyingoverc');
+  assert.equal(tweet.context.tweet.text, 'The directly replied-to post');
+  assert.equal(tweet.text, '你最牛了！');
+  assert.equal(core.buildCardLayout(tweet, (text) => text.length * 20).contextLayout.kind, 'reply');
+
+  // An ordinary preceding tweet without X's conversation connector is not a parent.
+  avatar.nextElementSibling = null;
+  assert.equal(core.extractTweetData(reply, options).context, null);
+  avatar.nextElementSibling = line;
+  // A missing/deleted parent or collapsed thread gap must not be jumped over.
+  replyCell.previousElementSibling = { querySelector: () => null };
+  assert.equal(core.extractTweetData(reply, options).context, null);
+  replyCell.previousElementSibling = parentCell;
+  assert.equal(core.extractTweetData(reply, { pageUrl: 'https://x.com/home' }).context, null);
+  // A tweet in a separate cell/timeline is not part of this conversation.
+  parent.closest = () => ({});
+  assert.equal(core.extractTweetData(reply, options).context, null);
 });

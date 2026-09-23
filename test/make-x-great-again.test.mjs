@@ -17,142 +17,6 @@ function metadataValues(key) {
     .map((match) => match[1].trim());
 }
 
-function makeListEntries(count = 1000) {
-  return Array.from({ length: count }, (_, index) => [
-    String(index + 1),
-    `account${String(index).padStart(4, '0')}`,
-    'sph',
-  ]);
-}
-
-test('official whitelist wins over a blacklist match regardless of handle casing', () => {
-  const index = core.createAccountIndex(
-    [['1001', 'SpamAccount', 'pph']],
-    [['1001', 'spamaccount']],
-  );
-
-  assert.equal(index.lookup({ handle: 'SPAMACCOUNT' }), null);
-});
-
-test('runtime matching does not treat an unobservable user ID as a whitelist guarantee', () => {
-  const index = core.createAccountIndex(
-    [['1001', 'RenamedSpam', 'sph']],
-    [['1001', 'PreviouslySafe']],
-  );
-
-  assert.equal(index.lookup({ userId: '1001', handle: 'renamedspam' })?.handle, 'renamedspam');
-  assert.equal(index.lookup({ handle: 'PREVIOUSLYSAFE' }), null);
-});
-
-test('list freshness is determined from the last successful list confirmation', () => {
-  const now = 10 * 60 * 60 * 1000;
-
-  assert.equal(core.isListStale(null, now), true);
-  assert.equal(core.isListStale({ fetchedAt: 0 }, now), true);
-  assert.equal(core.isListStale({ fetchedAt: now - core.LIST_STALE_MS + 1 }, now), false);
-  assert.equal(core.isListStale({ fetchedAt: now - core.LIST_STALE_MS }, now), true);
-});
-
-test('lite artifact entry validation rejects the whole update when any row is invalid', () => {
-  const valid = core.validateLiteArtifact({
-    schema: 2,
-    version: 'v-test-2',
-    count: 2,
-    entries: [
-      ['1001', 'FirstAccount', 'pph'],
-      ['', 'Second_Account', 'sca'],
-    ],
-  });
-  const invalid = core.validateLiteArtifact({
-    schema: 2,
-    version: 'v-test-2',
-    count: 2,
-    entries: [
-      ['1001', 'FirstAccount', 'pph'],
-      ['', 'not-a-valid-handle', 'sca'],
-    ],
-  });
-
-  assert.equal(valid.ok, true);
-  assert.equal(valid.value.entries.length, 2);
-  assert.deepEqual(invalid, { ok: false, error: 'invalid entry row' });
-});
-
-test('whitelist response is normalized into compact identity rows', () => {
-  const result = core.validateWhitelist({
-    list: [
-      { x_user_id: '1001', handle: 'SafeAccount' },
-      { x_user_id: null, handle: 'HandleOnly' },
-    ],
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    value: [
-      ['1001', 'SafeAccount'],
-      ['', 'HandleOnly'],
-    ],
-  });
-});
-
-test('auto-published list hits are visibly labeled and never auto-hidden', () => {
-  const index = core.createAccountIndex([['', 'AutoListed', 'pca']], []);
-  const presentation = core.getAccountPresentation(index.lookup({ handle: 'autolisted' }));
-
-  assert.equal(presentation.badgeText, '色情');
-  assert.equal(presentation.tierText, '自动收录');
-  assert.equal(presentation.shouldAutoHide, false);
-  assert.equal(presentation.canHideManually, true);
-});
-
-test('human-confirmed list hits are eligible for automatic hiding', () => {
-  const index = core.createAccountIndex([['', 'ConfirmedSpam', 'sph']], []);
-  const presentation = core.getAccountPresentation(index.lookup({ handle: 'confirmedspam' }));
-
-  assert.equal(presentation.tierText, '人工确认');
-  assert.equal(presentation.shouldAutoHide, true);
-  assert.equal(presentation.canHideManually, true);
-});
-
-test('confirmed-hit visibility defaults to hidden and can be temporarily switched back to labels', () => {
-  const confirmed = core.decodeEntry(['', 'ConfirmedSpam', 'sph']);
-  const automatic = core.decodeEntry(['', 'AutoListed', 'spa']);
-  const defaults = core.normalizeSettings({});
-
-  assert.deepEqual(defaults, { enabled: true, hideConfirmed: true, blockedKeywords: [] });
-  assert.equal(
-    core.getAccountVisibility({ entry: confirmed, settings: defaults }),
-    'hidden',
-  );
-  assert.equal(
-    core.getAccountVisibility({ entry: automatic, settings: defaults }),
-    'labeled',
-  );
-  assert.equal(
-    core.getAccountVisibility({
-      entry: confirmed,
-      settings: core.normalizeSettings({ hideConfirmed: false }),
-    }),
-    'labeled',
-  );
-  assert.equal(
-    core.getAccountVisibility({
-      entry: confirmed,
-      settings: core.normalizeSettings({ hideConfirmed: false }),
-      locallyHidden: true,
-    }),
-    'hidden',
-  );
-  assert.equal(
-    core.getAccountVisibility({
-      entry: confirmed,
-      settings: core.normalizeSettings({ enabled: false }),
-      locallyHidden: true,
-    }),
-    'shown',
-  );
-});
-
 test('keyword blocking normalizes user settings and matches tweet text without case or spacing differences', () => {
   const settings = core.normalizeSettings({
     blockedKeywords: [' Great   insight ', '私信了解', 'great insight', '', 42],
@@ -345,25 +209,6 @@ test('a text selection becomes a block candidate only inside one primary tweet b
   }), null);
 });
 
-test('panel backdrop clicks are consumed so they close without reaching the page below', () => {
-  const backdrop = {};
-  let prevented = false;
-  let stopped = false;
-  const event = {
-    target: backdrop,
-    preventDefault: () => {
-      prevented = true;
-    },
-    stopPropagation: () => {
-      stopped = true;
-    },
-  };
-
-  assert.equal(core.consumeBackdropClick(event, backdrop), true);
-  assert.equal(prevented, true);
-  assert.equal(stopped, true);
-  assert.equal(core.consumeBackdropClick({ target: {} }, backdrop), false);
-});
 
 test('mutation scan collection keeps only the affected account content roots', () => {
   const existingArticle = { id: 'existing-article' };
@@ -403,283 +248,6 @@ test('the MXGA runtime mount can only be claimed once per page', () => {
   assert.equal(core.claimRuntimeMount(root), false);
 });
 
-test('list sync refreshes the whitelist but skips the large artifact when the version is unchanged', async () => {
-  const entries = makeListEntries();
-  const raw = JSON.stringify({
-    schema: 2,
-    version: 'v-current',
-    count: entries.length,
-    entries,
-  });
-  const values = new Map([
-    ['mxga:list-cache:v2', {
-      schema: 1,
-      raw,
-      meta: { version: 'v-current', fetchedAt: 1, count: entries.length },
-    }],
-  ]);
-  const requests = [];
-  const responses = new Map([
-    ['https://x.zuoluo.tv/v1/whitelist', JSON.stringify({ list: [{ x_user_id: '9', handle: 'Safe' }] })],
-    [
-      'https://x.zuoluo.tv/v1/list/meta',
-      JSON.stringify({ version: 'v-current', artifacts: { lite: '/v1/artifacts/lite-v-current.json' } }),
-    ],
-  ]);
-  const synchronizer = core.createListSynchronizer({
-    now: () => 1000,
-    requestText: async (url) => {
-      requests.push(url);
-      return responses.get(url);
-    },
-    storage: {
-      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-      set: async (key, value) => values.set(key, value),
-    },
-  });
-
-  const result = await synchronizer.sync(false);
-
-  assert.deepEqual(requests, [
-    'https://x.zuoluo.tv/v1/whitelist',
-    'https://x.zuoluo.tv/v1/list/meta',
-  ]);
-  assert.equal(result.updated, false);
-  assert.deepEqual(values.get('mxga:whitelist:v1').entries, [['9', 'Safe']]);
-  assert.deepEqual(values.get('mxga:list-cache:v2'), {
-    schema: 1,
-    raw,
-    meta: { version: 'v-current', fetchedAt: 1000, count: entries.length },
-  });
-});
-
-test('unchanged metadata still redownloads when the cached artifact is invalid', async () => {
-  const entries = makeListEntries();
-  const artifactText = JSON.stringify({
-    schema: 2,
-    version: 'v-current',
-    count: entries.length,
-    entries,
-  });
-  const values = new Map([
-    ['mxga:list-cache:v2', {
-      schema: 1,
-      raw: '{"schema":2,"version":"v-current","count":1000,"entries":[]}',
-      meta: { version: 'v-current', fetchedAt: 1, count: entries.length },
-    }],
-  ]);
-  const requests = [];
-  const synchronizer = core.createListSynchronizer({
-    now: () => 1000,
-    requestText: async (url) => {
-      requests.push(url);
-      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
-      if (url.endsWith('/v1/list/meta')) {
-        return '{"version":"v-current","artifacts":{"lite":"/v1/artifacts/lite-v-current.json"}}';
-      }
-      return artifactText;
-    },
-    storage: {
-      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-      set: async (key, value) => values.set(key, value),
-    },
-  });
-
-  const result = await synchronizer.sync(false);
-
-  assert.equal(result.updated, true);
-  assert.equal(requests.at(-1), 'https://x.zuoluo.tv/v1/artifacts/lite-v-current.json');
-  assert.equal(values.get('mxga:list-cache:v2').raw, artifactText);
-});
-
-test('a corrupt list update never replaces the last known-good cache', async () => {
-  const oldRaw = JSON.stringify({ schema: 2, version: 'v-old', count: 1, entries: [['1', 'Old', 'sph']] });
-  const oldMeta = { version: 'v-old', fetchedAt: 10, count: 1200 };
-  const values = new Map([
-    ['mxga:list-meta:v1', oldMeta],
-    ['mxga:list-raw:v1', oldRaw],
-  ]);
-  const synchronizer = core.createListSynchronizer({
-    now: () => 2000,
-    requestText: async (url) => {
-      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
-      if (url.endsWith('/v1/list/meta')) {
-        return '{"version":"v-new","artifacts":{"lite":"/v1/artifacts/lite-v-new.json"}}';
-      }
-      return '{"schema":2,"version":"v-new","count":1,"entries":[["1","bad-handle","sph"]]}';
-    },
-    storage: {
-      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-      set: async (key, value) => values.set(key, value),
-    },
-  });
-
-  const result = await synchronizer.sync(false);
-
-  assert.equal(result.updated, false);
-  assert.equal(result.error, 'invalid entry row');
-  assert.equal(values.get('mxga:list-raw:v1'), oldRaw);
-  assert.equal(values.get('mxga:list-meta:v1'), oldMeta);
-});
-
-test('a failed cache commit keeps the previous list snapshot intact', async () => {
-  const oldRaw = JSON.stringify({
-    schema: 2,
-    version: 'v-old',
-    count: 1,
-    entries: [['1', 'OldAccount', 'sph']],
-  });
-  const oldSnapshot = {
-    schema: 1,
-    raw: oldRaw,
-    meta: { version: 'v-old', fetchedAt: 10, count: 1 },
-  };
-  const values = new Map([['mxga:list-cache:v2', oldSnapshot]]);
-  const entries = makeListEntries();
-  const artifactText = JSON.stringify({
-    schema: 2,
-    version: 'v-new',
-    count: entries.length,
-    entries,
-  });
-  const synchronizer = core.createListSynchronizer({
-    now: () => 2000,
-    requestText: async (url) => {
-      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
-      if (url.endsWith('/v1/list/meta')) {
-        return '{"version":"v-new","artifacts":{"lite":"/v1/artifacts/lite-v-new.json"}}';
-      }
-      return artifactText;
-    },
-    storage: {
-      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-      set: async (key, value) => {
-        if (key === 'mxga:list-cache:v2') throw new Error('simulated cache commit failure');
-        values.set(key, value);
-      },
-    },
-  });
-
-  const result = await synchronizer.sync(false);
-
-  assert.equal(result.updated, false);
-  assert.equal(result.error, 'simulated cache commit failure');
-  assert.deepEqual(values.get('mxga:list-cache:v2'), oldSnapshot);
-  assert.equal(values.has('mxga:list-raw:v1'), false);
-  assert.equal(values.has('mxga:list-meta:v1'), false);
-});
-
-test('the stored list reader loads one complete atomic snapshot', async () => {
-  const entries = makeListEntries();
-  const meta = { version: 'v-current', fetchedAt: 1234, count: entries.length };
-  const values = new Map([
-    ['mxga:list-cache:v2', {
-      schema: 1,
-      raw: JSON.stringify({
-        schema: 2,
-        version: meta.version,
-        count: entries.length,
-        entries,
-      }),
-      meta,
-    }],
-    ['mxga:whitelist:v1', {
-      entries: [['9', 'SafeAccount']],
-    }],
-  ]);
-
-  const result = await core.readStoredList({
-    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-  });
-
-  assert.equal(result.error, null);
-  assert.equal(result.entries.length, entries.length);
-  assert.deepEqual(result.entries[0], entries[0]);
-  assert.deepEqual(result.meta, meta);
-  assert.deepEqual(result.whitelistEntries, [['9', 'SafeAccount']]);
-});
-
-test('the stored list reader rejects a snapshot whose artifact and metadata versions differ', async () => {
-  const entries = makeListEntries();
-  const values = new Map([['mxga:list-cache:v2', {
-    schema: 1,
-    raw: JSON.stringify({
-      schema: 2,
-      version: 'v-artifact',
-      count: entries.length,
-      entries,
-    }),
-    meta: { version: 'v-metadata', fetchedAt: 1234, count: entries.length },
-  }]]);
-
-  const result = await core.readStoredList({
-    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-  });
-
-  assert.deepEqual(result.entries, []);
-  assert.equal(result.meta, null);
-  assert.equal(result.error, 'cached list version mismatch');
-});
-
-test('the stored list reader rejects a snapshot whose metadata count differs', async () => {
-  const entries = makeListEntries();
-  const values = new Map([['mxga:list-cache:v2', {
-    schema: 1,
-    raw: JSON.stringify({
-      schema: 2,
-      version: 'v-current',
-      count: entries.length,
-      entries,
-    }),
-    meta: { version: 'v-current', fetchedAt: 1234, count: entries.length - 1 },
-  }]]);
-
-  const result = await core.readStoredList({
-    get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-  });
-
-  assert.deepEqual(result.entries, []);
-  assert.equal(result.meta, null);
-  assert.equal(result.error, 'cached list count mismatch');
-});
-
-test('GM request object rejections become a readable network error', async () => {
-  const requestText = core.createRequestAdapter({
-    xmlHttpRequest: async () => Promise.reject({ status: 0, statusText: '' }),
-  });
-
-  await assert.rejects(
-    requestText('https://x.zuoluo.tv/v1/list/meta', 1024),
-    /网络请求失败/,
-  );
-});
-
-test('GM request adapter performs a bodyless read-only request', async () => {
-  const requests = [];
-  const requestText = core.createRequestAdapter({
-    xmlHttpRequest: async (request) => {
-      requests.push(request);
-      return { status: 200, responseText: '{"ok":true}' };
-    },
-  });
-
-  assert.equal(
-    await requestText('https://x.zuoluo.tv/v1/list/meta', 1024),
-    '{"ok":true}',
-  );
-  assert.deepEqual(requests, [{
-    method: 'GET',
-    url: 'https://x.zuoluo.tv/v1/list/meta',
-    headers: {
-      Accept: 'application/json',
-      'Cache-Control': 'no-cache',
-    },
-    responseType: 'text',
-    timeout: 60000,
-  }]);
-  assert.equal('data' in requests[0], false);
-});
-
 test('GM JSON request adapter preserves authenticated writes and conflict payloads', async () => {
   let seen;
   const requestJson = core.createJsonRequestAdapter({
@@ -710,42 +278,6 @@ test('GM JSON request adapter preserves authenticated writes and conflict payloa
     body: { document: { items: {}, schema: 1 }, revision: 3 },
     status: 409,
   });
-});
-
-test('a valid changed artifact is stored with a safe fallback version', async () => {
-  const values = new Map();
-  const entries = makeListEntries();
-  const artifactText = JSON.stringify({ schema: 2, count: entries.length, entries });
-  const synchronizer = core.createListSynchronizer({
-    now: () => 3000,
-    requestText: async (url) => {
-      if (url.endsWith('/v1/whitelist')) return '{"list":[]}';
-      if (url.endsWith('/v1/list/meta')) {
-        return '{"version":{"unsafe":true},"artifacts":{"lite":"/v1/artifacts/lite-next.json"}}';
-      }
-      return artifactText;
-    },
-    storage: {
-      get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
-      set: async (key, value) => values.set(key, value),
-    },
-  });
-
-  const result = await synchronizer.sync(false);
-
-  assert.equal(result.updated, true);
-  assert.equal(result.version, 'n1000');
-  assert.deepEqual(values.get('mxga:list-cache:v2'), {
-    schema: 1,
-    raw: artifactText,
-    meta: {
-      version: 'n1000',
-      fetchedAt: 3000,
-      count: 1000,
-    },
-  });
-  assert.equal(values.has('mxga:list-raw:v1'), false);
-  assert.equal(values.has('mxga:list-meta:v1'), false);
 });
 
 test('local hidden accounts are case-insensitive, deduplicated, and reversible', () => {
@@ -794,52 +326,10 @@ test('avatar blocking binds only to the avatar link for the current tweet author
   assert.equal(core.findAvatarTrigger(item, 'missingauthor'), null);
 });
 
-test('profile badge mount falls back to the semantic public-profile markup used by X', () => {
-  const mount = {};
-  const handleLeaf = {
-    children: [],
-    parentElement: mount,
-    textContent: '@Public_Profile',
-  };
-  const additionalName = {
-    getAttribute: (name) => name === 'content' ? 'Public_Profile' : null,
-  };
-  const person = {
-    contains: (node) => node === mount,
-    querySelector: (selector) => selector === 'meta[itemprop="additionalName"][content]'
-      ? additionalName
-      : null,
-    querySelectorAll: () => [handleLeaf],
-  };
-  const root = {
-    querySelector: (selector) => {
-      if (selector === '[data-testid="UserName"]') return null;
-      if (selector === '[itemprop="mainEntity"][itemtype="https://schema.org/Person"]') return person;
-      return null;
-    },
-  };
-
-  assert.equal(core.findProfileNameBlock(root, 'public_profile'), mount);
-  assert.equal(core.findProfileNameBlock(root, 'different_profile'), null);
-});
-
-test('binary lookup remains correct for underscore-prefixed and mixed-case handles', () => {
-  const index = core.createAccountIndex([
-    ['', 'Zulu', 'soh'],
-    ['', '_Leading', 'sph'],
-    ['', 'Alpha', 'sph'],
-  ]);
-
-  assert.equal(index.lookup({ handle: '_LEADING' }).normalizedHandle, '_leading');
-  assert.equal(index.lookup({ handle: 'alpha' }).normalizedHandle, 'alpha');
-  assert.equal(index.lookup({ handle: 'zulu' }).normalizedHandle, 'zulu');
-});
-
-test('metadata exposes the cross-platform interface required by Tampermonkey and iOS Userscripts', () => {
-  assert.deepEqual(metadataValues('inject-into'), ['content']);
+test('metadata targets desktop Tampermonkey without public list permissions', () => {
+  assert.deepEqual(metadataValues('inject-into'), []);
   assert.deepEqual(metadataValues('match'), ['https://x.com/*', 'https://twitter.com/*']);
   assert.deepEqual(metadataValues('connect'), [
-    'x.zuoluo.tv',
     'mxga-sync.1109.workers.dev',
     'pbs.twimg.com',
     '*', // User-configured cobalt instance; no private endpoint in the public bundle.
@@ -866,14 +356,6 @@ test('MXGA bundles the tested share-card interface and prevents duplicate runtim
   assert.equal(typeof core.buildCardLayout, 'function');
   assert.match(scriptText, /data-tsc-runtime-mounted/);
   assert.match(scriptText, /data-tsc-action="share-card"/);
-});
-
-test('settings version metric stays on one line while retaining the full machine version', () => {
-  assert.match(
-    scriptText,
-    /\[data-role="version"\]\{[^}]*overflow:hidden;[^}]*text-overflow:ellipsis;[^}]*white-space:nowrap[^}]*\}/,
-  );
-  assert.match(scriptText, /elements\.version\.title\s*=\s*version;/);
 });
 
 test('settings panel exposes a local multiline keyword editor that can be saved and applied', () => {
@@ -906,7 +388,7 @@ test('published userscript mounts a compact direct-block icon on tweet author av
   assert.match(scriptText, /class="avatar-block"/);
   assert.match(scriptText, /data-action="block-avatar"/);
   assert.match(scriptText, /aria-label="屏蔽用户"/);
-  assert.match(scriptText, /callbacks\.onHide\(selected\.handle, selected\.entry\)/);
+  assert.match(scriptText, /callbacks\.onHide\(selected\.handle\)/);
   assert.doesNotMatch(scriptText, /账号操作浮窗/);
   assert.match(scriptText, /categoryText: '手动屏蔽'/);
 });
@@ -914,4 +396,24 @@ test('published userscript mounts a compact direct-block icon on tweet author av
 test('userscript contains no X private API or page-world network client', () => {
   assert.doesNotMatch(mxgaSourceText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
   assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users|\/i\/api\/|graphql)/i);
+});
+
+test('retired caches are deleted without being read and personal keys are untouched', async () => {
+  const removed = [];
+  await core.removeRetiredListCache({ delete: async (key) => removed.push(key), get: () => assert.fail('must not parse old cache') });
+  assert.deepEqual(removed, ['mxga:list-cache:v2', 'mxga:list-meta:v1', 'mxga:list-raw:v1', 'mxga:whitelist:v1', 'mxga:sync-lock:v1']);
+  assert.doesNotMatch(scriptText, /x\.zuoluo\.tv|createListSynchronizer|createAccountIndex|hideConfirmed|safe-area-inset/);
+});
+
+test('existing personal settings survive while retired automatic list controls are discarded', () => {
+  assert.deepEqual(core.normalizeSettings({enabled:false, hideConfirmed:true, blockedKeywords:[' keep me ']}), {enabled:false, blockedKeywords:['keep me']});
+});
+
+test('floating position is validated and stays within resized desktop viewports', () => {
+  assert.deepEqual(core.normalizeMxgaPosition(null), {side:'right',ratio:0.85});
+  assert.deepEqual(core.normalizeMxgaPosition({side:'up',ratio:Infinity}), {side:'right',ratio:0.85});
+  assert.deepEqual(core.normalizeMxgaPosition({side:'left',ratio:2}), {side:'left',ratio:1});
+  const control = {width:96,height:40};
+  assert.deepEqual(core.getMxgaDock({side:'left',ratio:0}, {width:1000,height:800}, control), {left:12,top:12});
+  assert.deepEqual(core.getMxgaDock({side:'right',ratio:1}, {width:640,height:480}, control), {left:532,top:428});
 });

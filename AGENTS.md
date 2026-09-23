@@ -73,7 +73,7 @@ node --check scripts/m-team-torrent-enhancer.user.js
 
 - `scripts/ai-agent-book-reading-notes.user.js`：AI Agent Book 阅读批注、本地导出和可选的端到端加密同步。
 - `scripts/m-team-torrent-enhancer.user.js`：M-Team 种子列表增强，新热种高亮和已访问种子置灰。
-- `scripts/make-x-great-again.user.js`：MXGA 公共名单标记、本地隐藏与推文分享卡片的跨端 userscript。
+- `scripts/make-x-great-again.user.js`：MXGA 桌面网页个人过滤、推文分享卡片与 cobalt 视频下载 userscript。
 - `scripts/manga18fx-ad-cleaner.user.js`：清理 Manga18fx banner、漂浮广告和反广告拦截提示。
 - `scripts/simpcity-ad-cleaner.user.js`：拦截 SimpCity/Turbo 广告跳转并清理广告位。
 - `scripts/telegram-webk-media-downloader.user.js`：下载 Telegram WebK 当前聊天中的图片、视频和文档。

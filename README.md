@@ -40,17 +40,16 @@
 https://reading-notes-sync.1109.workers.dev
 ```
 
-### Make X Great Again（跨平台 userscript）
+### Make X Great Again（桌面网页 userscript）
 
 [点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js)
 
-这是对 [foru17/make-x-great-again](https://github.com/foru17/make-x-great-again) 的 AGPL-3.0-or-later userscript 迁移与跨端适配，目标是在一份脚本中同时支持 PC 浏览器和 iOS Safari。许可证全文见 [`LICENSES/AGPL-3.0.txt`](LICENSES/AGPL-3.0.txt)。
+这是对 [foru17/make-x-great-again](https://github.com/foru17/make-x-great-again) 的 AGPL-3.0-or-later userscript 衍生版，支持桌面 Chrome / Edge + Tampermonkey，不再维护 iOS / iPadOS 专属适配。许可证全文见 [`LICENSES/AGPL-3.0.txt`](LICENSES/AGPL-3.0.txt)。
 
 当前功能：
 
-- 定期同步 MXGA 公共名单与官方白名单，匹配全程在本机完成。
-- 在 X 首页、搜索、状态页、评论区和个人主页显示名单徽标。
-- 视频帖的原生分享菜单增加“下载视频”：未配置 API 时直接打开 cobalt 网页并带入帖子链接；已配置时自动调用自建服务解析，支持单视频和多视频选择。可在 MXGA 面板的“视频下载设置”中填写 HTTPS API 地址和可选 API Key；清空地址并保存即可恢复网页模式。配置仅存于本机 GM 存储，不参与名单/过滤同步。下载由浏览器接管，不将整个视频加载到脚本内存。
+- 仅依据个人关键词和手动屏蔽账号过滤内容，不再下载公共账号名单或官方白名单。升级时按键删除旧名单缓存，不读取大名单；个人规则、同步配置和 cobalt 配置沿用原存储。
+- 视频帖的原生分享菜单增加“下载视频”：未配置 API 时直接打开 cobalt 网页并带入帖子链接；已配置时自动调用自建服务解析，支持单视频和多视频选择。可在 MXGA 面板的“视频下载设置”中填写 HTTPS API 地址和可选 API Key；清空地址并保存即可恢复网页模式。配置仅存于本机 GM 存储，不参与过滤规则同步。下载由浏览器接管，不将整个视频加载到脚本内存。
 - 下载入口仅识别当前帖自身的播放器或带播放按钮的未播放视频预览，以及可确认归属的永久链接（兼容无 `time` 标签的详情页和新版分享按钮）；仅引用帖含视频、链接归属不明、全屏播放器独立菜单暂不支持。确认视频归属后会用本功能替换分享菜单中的官方“下载视频”入口，仅保留一个可见下载项；无法确认时保留官方入口。关闭窗口会取消解析；链接过期可重新解析。
 - 在 X 原生分享菜单中增加“生成分享图”，将作者、正文、发布时间和最多 4 张配图排版成独立卡片。
 - 打开回复帖的详情页后生成分享图，会附上对话中直接被回复的帖子（作者、正文及配图），多层回复取相邻的上一层。原帖须已加载，且保留页面中的对话连接线；缺失或折叠时不会越过间隔误取其他帖子。
@@ -58,31 +57,29 @@ https://reading-notes-sync.1109.workers.dev
 - 超长分享卡片会在保留完整内容的前提下缩放到安全像素预算；关闭或重新生成时会取消旧的图片任务。
 - 正文中的 @提及、#话题和完整链接使用 X 品牌蓝突出显示；海报底部包含原文链接和本地生成的二维码。
 - 在弹窗中预览并复制 PNG；浏览器拒绝图片剪贴板权限时可下载 PNG。
-- PC 支持悬停、键盘聚焦和点击；iPhone / iPad 使用点击与底部弹层。
-- 默认隐藏人工确认账号的列表项与推文，可在脚本面板临时关闭；自动收录条目仍只提示。
-- 可手动本地隐藏账号内容，5 秒内撤销，也可从脚本面板恢复；手动隐藏记录不受自动隐藏开关影响。
+- 可手动本地隐藏账号内容，5 秒内撤销，也可从脚本面板恢复；“启用过滤”关闭时临时显示全部内容，规则保留，分享图与下载仍可用。
 - 可在脚本面板逐行配置屏蔽关键词；匹配忽略大小写和连续空白，只检查推文正文，保存后立即应用。
 - 在推文正文中划词后显示小号“屏蔽”按钮；点击后短语加入关键词列表，当前页面所有命中推文立即隐藏。
 - hover 推文作者头像时，只在头像右上角显示一个屏蔽图标；点击后立即隐藏该用户的当前可见内容。
 - 关键词和手动屏蔽账号可选多端同步；远端列表公开可读，写入需要同步密钥，离线增删和并发修改会合并。
 - 设置面板打开时，点击面板外空白区域会关闭面板，不会触发下方 X 页面。
-- 使用原名单数组排序和二分查找，避免为大名单额外建立两张内存索引。
+- 面板分为“关键词 / 屏蔽账号 / 设置”，支持未保存草稿保护、账号搜索、分页、手动添加和恢复；个人规则同步密钥默认折叠。
+- MXGA 浮窗可拖动，松手后吸附到最近的左右边缘；位置在本机保存，窗口缩放时保持可见，可在设置中重置。支持键盘页签切换、Esc 关闭和焦点恢复。
 - 页面变化只增量处理受影响的推文或用户单元，并保留低频全页恢复扫描；重复注入不会启动第二套运行时。
 
-关键词屏蔽可以通过两种方式使用：在推文正文中划词后点击浮动工具条，或打开右下角 `MXGA` 面板，在“关键词屏蔽”中每行填写一个词或完整短语并点击“保存并应用”。留空并保存即可关闭关键词屏蔽。建议优先填写机器人反复使用的完整短语；过短或常见的单词容易误伤正常内容。
+关键词屏蔽可以通过两种方式使用：在推文正文中划词后点击浮动工具条，或打开 `MXGA` 面板，在“关键词屏蔽”中每行填写一个词或完整短语并点击“保存并应用”。留空并保存即可关闭关键词屏蔽。建议优先填写机器人反复使用的完整短语；过短或常见的单词容易误伤正常内容。
 
 当前没有内置第三方关键词表。现有公开列表大多是个人话题偏好或通用 AI 文风特征，不是经过验证的 X 机器人回复名单，直接合并会产生较高误伤；未启用多端同步时，你的配置只保存在 userscript 本地存储中。
 
-多端同步使用方式：在已配置的 Mac 上运行 `security find-generic-password -a kyangc -s mxga-sync -w` 读取写入密钥，然后打开 MXGA 面板，将密钥粘贴到“多端同步”并点击“保存并同步”。其他设备重复粘贴同一个密钥即可。同步内容可从 [公开快照](https://mxga-sync.1109.workers.dev/v1/snapshot)读取；密钥不是加密口令，只用于阻止无关用户改写。其他用户可继续使用纯本地模式，或按 [`services/mxga-sync`](services/mxga-sync) 的说明部署自己的实例。
+多端同步使用方式：在已配置的 Mac 上运行 `security find-generic-password -a kyangc -s mxga-sync -w` 读取写入密钥，然后打开 MXGA 面板，将密钥粘贴到“设置 → 个人规则同步”并点击“保存并同步”。其他设备重复粘贴同一个密钥即可。同步内容可从 [公开快照](https://mxga-sync.1109.workers.dev/v1/snapshot)读取；密钥不是加密口令，只用于阻止无关用户改写。其他用户可继续使用纯本地模式，或按 [`services/mxga-sync`](services/mxga-sync) 的说明部署自己的实例。
 
 安全边界：
 
-- 名单匹配不上传页面内容、当前 X 身份或命中结果；只有用户显式启用多端同步后，关键词和手动屏蔽账号才会上传到公开快照。视频下载仅按下述规则将帖子链接交给 cobalt 网页或配置的服务。
+- 本地过滤不上传页面内容、当前 X 身份或命中结果；只有用户显式启用多端同步后，关键词和手动屏蔽账号才会上传到公开快照。视频下载仅按下述规则将帖子链接交给 cobalt 网页或配置的服务。
 - 不调用 X 私有接口，不执行 X 原生静音或拉黑。
-- 运行时名单与白名单只按页面可观察到的当前 handle 匹配；用户改名后的身份变化需要等待官方名单同步，不承诺页面无法验证的用户 ID 匹配。
 - 点击“下载视频”后，未配置时通过 URL 片段将帖子链接交给 cobalt 网页，验证与保存由网站处理；已配置时向自建 API 发送链接，不发送 X cookie。自建服务失败或配置读取失败时不会自动切换到公共网站。为支持自定义实例，metadata 增加 `@connect *`；脚本管理器可能要求确认目标域名的访问权限。API Key 只发往配置的 API，下载链接不附加该密钥。服务需支持 HTTPS 和 cobalt 当前 JSON API；受限帖子、鉴权、限流和网络错误会显示在下载窗口。
 - 分享图只读取页面已展示的推文内容；图片通过 `pbs.twimg.com` 在本地加载并在 Canvas 中生成，不上传推文数据。
-- 只作用于 PC / iOS 浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
+- 只作用于桌面浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
 - 请勿与原版 MXGA 浏览器扩展同时启用，以免出现重复徽标和两套隐藏记录。
 
 分享图当前优先支持普通文字、图片、视频、引用推文和对话页回复；投票和更深层 Thread 只按页面可可靠读取到的内容降级处理。二维码编码使用 MIT 许可的 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)，依赖版本和 SHA-256 完整性校验固定在脚本 metadata 中。
@@ -94,17 +91,9 @@ PC 安装：
 1. 安装 Tampermonkey。
 2. Chrome 138 及以上版本打开 Tampermonkey 的扩展详情页，启用“允许运行用户脚本”；也可按 [Tampermonkey 官方说明](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)启用浏览器开发者模式。
 3. 打开上面的 raw 安装链接并确认安装。
-4. 访问 `https://x.com/`，右下角出现 `MXGA` 控制按钮。
+4. 访问 `https://x.com/`，右侧边缘出现 `MXGA` 控制按钮。
 
-iOS / iPadOS 安装：
-
-1. 安装并打开 [Userscripts](https://apps.apple.com/app/userscripts/id1463298887)。
-2. 在“设置 → Safari → 扩展 → Userscripts”中启用扩展，并允许访问 `x.com`。
-3. 在 Userscripts App 中设置脚本目录，然后在 Safari 的 Userscripts 界面选择 `New Remote`。
-4. 粘贴上面的 raw 安装链接，保存并启用脚本。
-5. 打开 `https://x.com/`；首次同步约 7 MB 的公共名单，需要等待片刻。
-
-兼容性状态：PC 端已在 Chrome for Testing 148 + 官方 Tampermonkey 5.5.0 中验证 raw 安装、GM 存储、跨域名单同步、服务中断时的缓存降级与恢复、公开个人主页徽标、推文隐藏/恢复与设置持久化；Safari JavaScriptCore 和线上名单解析也已通过。分享卡片模块有聚焦的纯逻辑回归测试，并已在真实 Chromium 内核的合成 X DOM 中验证菜单去重、预览、长图像素预算与任务取消；当前版本仍需补官方 Tampermonkey Raw + 真实 `x.com` 页面验收，证据边界和清单见 [MXGA 浏览器运行时与发布验收](docs/mxga-browser-acceptance.md)。iOS Userscripts 的真实设备内存、安装更新、分享图生成和触控流程仍是正式兼容性验收门槛。真机测试请按 [MXGA iOS / iPadOS 验收清单](docs/mxga-ios-acceptance.md) 执行。
+验收范围：桌面浏览器的过滤、个人规则同步、浮窗拖拽和分享/下载链路。构建测试与合成页面烟测不替代真实 X / Tampermonkey 验收，见 [MXGA 浏览器运行时与发布验收](docs/mxga-browser-acceptance.md)。
 
 ### M-Team 种子列表增强
 
@@ -207,7 +196,7 @@ npm run check
 npm run build:userscripts
 ```
 
-推送到 `main` 或创建 Pull Request 后，[GitHub Actions](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 会在只读权限下自动运行同一套检查；检查通过不等于 iOS 真机验收通过。
+推送到 `main` 或创建 Pull Request 后，[GitHub Actions](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 会在只读权限下自动运行同一套检查；检查通过不等于真实站点运行时验收通过。
 
 校验油猴脚本发布元信息：
 

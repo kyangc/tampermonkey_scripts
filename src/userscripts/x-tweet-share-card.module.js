@@ -1791,7 +1791,7 @@
         :host{position:fixed;inset:0;z-index:2147483646;font-family:${FONT_STACK};color:#0f1419;color-scheme:light}
         *{box-sizing:border-box}
         button{font:inherit}
-        .backdrop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:max(18px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));background:rgba(15,20,25,.66);backdrop-filter:blur(10px)}
+        .backdrop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(15,20,25,.66);backdrop-filter:blur(10px)}
         .modal{display:grid;grid-template-rows:auto minmax(0,1fr) auto;width:min(680px,100%);max-height:min(900px,calc(100dvh - 36px));overflow:hidden;border:1px solid rgba(255,255,255,.38);border-radius:28px;background:#f7f9f9}
         .header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:22px 24px 18px;background:rgba(255,255,255,.96);border-bottom:1px solid #eff3f4}
         .eyebrow{margin:0 0 4px;color:#1d9bf0;font-size:12px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
@@ -1819,7 +1819,6 @@
         .secondary{border:1px solid #cfd9df;background:#fff;color:#0f1419}
         .secondary:hover:not(:disabled){background:#f0f4f6;border-color:#b6c2ca}
         @keyframes spin{to{transform:rotate(360deg)}}
-        @media(max-width:520px){.backdrop{padding:0;align-items:flex-end}.modal{max-height:94dvh;border-radius:26px 26px 0 0}.header{padding:19px 18px 15px}.preview-shell{padding:16px}.footer{padding:14px 16px max(16px,env(safe-area-inset-bottom))}.actions{grid-template-columns:1fr}.subtitle{font-size:13px}}
         @media(prefers-reduced-motion:reduce){.spinner{animation-duration:1.8s}.close,.button{transition:none}}
       </style>
       <div class="backdrop">

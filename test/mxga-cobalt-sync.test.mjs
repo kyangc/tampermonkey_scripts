@@ -3,7 +3,6 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 const require = createRequire(import.meta.url);
 const core = require('../scripts/make-x-great-again.user.js');
-const phrase = 'a-long-test-passphrase-unique';
 const config = { endpoint: 'https://cobalt.example.test/', apiKey: 'secret-test-key' };
 const empty = () => ({schema:1,items:{}});
 function device(initial={}) {
@@ -12,24 +11,10 @@ function device(initial={}) {
   return {store,gm,sync:core.createCobaltConfigSync(gm)};
 }
 
-test('AES-GCM round trip, randomized envelopes, wrong key and metadata tampering', async () => {
-  const {sync}=device();
-  const a=await sync.encrypt(config,phrase,'device-first',100);
-  const b=await sync.encrypt(config,phrase,'device-first',100);
-  assert.notEqual(a.data,b.data);
-  assert.deepEqual(await sync.decrypt(a,phrase),config);
-  assert.ok(!JSON.stringify(a).includes(config.endpoint));
-  assert.ok(!JSON.stringify(a).includes(config.apiKey));
-  await assert.rejects(sync.decrypt(a,'wrong-passphrase'),/解密失败/);
-  await assert.rejects(sync.decrypt({...a,updatedAt:101},phrase),/解密失败/);
-  await assert.rejects(sync.decrypt({...a,data:'A'.repeat(a.data.length)},phrase),/解密失败/);
-});
-
-test('two devices sync config, retain ciphertext across rule changes, and sync explicit reset', async () => {
+test('two devices sync config with rules without a separate switch or passphrase, including reset', async () => {
   const a=device({'mxga:cobalt:v1':config});const b=device();
-  await a.sync.configure(phrase);await b.sync.configure(phrase);
   let doc=await a.sync.prepare(empty(),empty(),'device-first');
-  assert.ok(doc.cobalt);
+  assert.deepEqual(doc.cobalt.config,config);
   assert.equal(await a.sync.apply(doc.cobalt),true);
   const incoming=await b.sync.prepare(empty(),doc,'device-second');
   assert.deepEqual(incoming.cobalt,doc.cobalt);
@@ -44,39 +29,56 @@ test('two devices sync config, retain ciphertext across rule changes, and sync e
   assert.deepEqual(a.store['mxga:cobalt:v1'],{endpoint:'',apiKey:''});
 });
 
-test('wrong passphrase cannot overwrite remote or local config; opting out preserves envelope', async () => {
-  const a=device({'mxga:cobalt:v1':config});await a.sync.configure(phrase);
+test('fresh device takes remote settings as an endpoint/key pair', async () => {
+  const a=device({'mxga:cobalt:v1':config});
   const doc=await a.sync.prepare(empty(),empty(),'device-first');
   const b=device({'mxga:cobalt:v1':{endpoint:'https://local.example/',apiKey:'local-only'}});
-  await b.sync.configure('different-long-passphrase');
-  await assert.rejects(b.sync.prepare(empty(),doc,'device-second'),/解密失败/);
-  assert.equal(b.store['mxga:cobalt:v1'].apiKey,'local-only');
-  await b.sync.configure('');assert.deepEqual(await b.sync.prepare(doc,doc,'device-second'),doc);
+  const incoming=await b.sync.prepare(empty(),doc,'device-second');
+  await b.sync.apply(incoming.cobalt);
+  assert.deepEqual(b.store['mxga:cobalt:v1'],config);
 });
 
-test('encrypted outbox survives failed request/restart and in-flight local edits are not replaced', async () => {
-  const a=device({'mxga:cobalt:v1':config});await a.sync.configure(phrase);
+test('outbox survives failed request/restart and in-flight local edits are not replaced', async () => {
+  const a=device({'mxga:cobalt:v1':config});
   const pending=await a.sync.prepare(empty(),empty(),'device-first');
   const restart=device(a.store);const retry=await restart.sync.prepare(empty(),empty(),'device-first');
   assert.deepEqual(retry.cobalt,pending.cobalt);
   restart.store['mxga:cobalt:v1']={...config,apiKey:'new-key'};
   assert.equal(await restart.sync.apply(retry.cobalt),false);
   const updated=await restart.sync.prepare(retry,retry,'device-first');
-  assert.equal((await restart.sync.decrypt(updated.cobalt,phrase)).apiKey,'new-key');
+  assert.equal(updated.cobalt.config.apiKey,'new-key');
 });
 
 test('failed storage read does not become an empty configuration update', async () => {
-  const a=device({'mxga:cobalt:v1':config});await a.sync.configure(phrase);
+  const a=device({'mxga:cobalt:v1':config});
   const real=a.gm.getValue;a.gm.getValue=async(k,d)=>{if(k==='mxga:cobalt:v1')throw Error('storage denied');return real(k,d)};
   await assert.rejects(a.sync.prepare(empty(),empty(),'device-first'),/storage denied/);
-  assert.equal(a.store['mxga:cobalt-sync:v1'].pending,undefined);
+  assert.equal(a.store['mxga:cobalt-sync:v2'],undefined);
 });
 
-test('malformed encrypted configuration is rejected instead of silently stripped', () => {
-  assert.throws(() => core.normalizeFilterDocument({schema:1,items:{},cobalt:{endpoint:'plaintext'}}), /密文格式无效/);
+test('malformed configuration is rejected; encrypted history does not prevent syncing local settings', async () => {
+  assert.throws(() => core.normalizeFilterDocument({schema:1,items:{},cobalt:{endpoint:'invalid'}}), /配置格式无效/);
+  const history = core.normalizeFilterDocument({...empty(),cobalt:{v:1,salt:'old',data:'encrypted'}});
+  const a=device({'mxga:cobalt:v1':config,'mxga:cobalt-sync:v1':{passphrase:'unused'}});
+  const doc=await a.sync.prepare(history,history,'device-first');
+  assert.deepEqual(doc.cobalt.config,config);
 });
 
-test('configuration encryption cannot reuse the server write token', async () => {
-  const a=device({'mxga:cobalt:v1':config});await a.sync.configure(phrase);
-  await assert.rejects(a.sync.prepare(empty(),empty(),'device-first',phrase), /必须与同步密钥不同/);
+test('conflicting config events converge without mixing endpoint and key', () => {
+  const a={...empty(),cobalt:{v:2,source:'device-first',updatedAt:100,config}};
+  const b={...empty(),cobalt:{v:2,source:'device-second',updatedAt:101,config:{endpoint:'https://other.example/',apiKey:'other-key'}}};
+  assert.deepEqual(core.mergeFilterDocuments(a,b),core.mergeFilterDocuments(b,a));
+  assert.deepEqual(core.mergeFilterDocuments(a,b).cobalt.config,b.cobalt.config);
+});
+
+test('unavailable v2 endpoint stops before preparing or sending configuration', async () => {
+  const calls=[];
+  const sync=core.createFilterSynchronizer({endpoint:'https://old-sync.example/',
+    requestJson:async request=>{calls.push(request);return {status:404,body:{}};},
+    prepareDocument:()=>{throw Error('must not prepare configuration');},
+  });
+  await assert.rejects(sync.sync({token:'write-token-long-enough-for-tests',document:empty()}),/无法读取/);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].method,'GET');
+  assert.equal(calls[0].body,undefined);
 });

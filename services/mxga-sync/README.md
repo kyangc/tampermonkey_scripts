@@ -1,20 +1,13 @@
 # MXGA Sync Worker
 
-Cloudflare Worker + D1 backend for the optional multi-device block preferences in `make-x-great-again.user.js`.
+Cloudflare Worker + D1 backend for MXGA preferences and cobalt download settings.
 
-The service is intentionally simple:
-
-- `GET /v1/snapshot` is public and returns the current keyword/account document and optional encrypted cobalt envelope.
-- `POST /v1/snapshot` requires the `SYNC_TOKEN` bearer secret.
+- `GET /v2/snapshot` and `POST /v2/snapshot` require the same `SYNC_TOKEN` bearer secret.
+- One document contains keywords, blocked accounts, and optional cobalt endpoint/API Key settings. There is no separate encryption passphrase or switch.
+- HTTPS protects transport; D1 stores the configuration as JSON. The service owner and holders of the sync token can read it.
 - Writes use an optimistic `baseRevision`; stale writers receive `409` with the latest document and merge before retrying.
-- The userscript keeps per-item update records and deletion tombstones so offline additions and removals can converge.
+- Per-item update records and deletion tombstones preserve offline preference changes. Cobalt endpoint and API Key form one timestamped event, so they cannot be merged into a mismatched pair.
 - The service does not receive visited pages, the current X identity, tweet text, or match events.
-
-The personal production deployment is:
-
-```text
-https://mxga-sync.1109.workers.dev
-```
 
 ## Deploy
 
@@ -28,26 +21,16 @@ npx wrangler secret put SYNC_TOKEN
 npx wrangler deploy
 ```
 
-Keep the write token outside the repository. Each trusted browser stores the same token in its own userscript storage. The synchronized document itself is public and is not encrypted.
+Keep the sync token outside the repository. Each trusted browser stores the same token in its own userscript storage. The default service is `https://mxga-sync.1109.workers.dev`; to use another deployment, change `FILTER_SYNC_ENDPOINT` in `src/userscripts/make-x-great-again.entry.js`, add its host to `@connect`, and rebuild.
 
-## Encrypted cobalt configuration (service 0.2.0 / userscript 0.7.1)
+## Release order and verification
 
-The existing snapshot may additionally contain `document.cobalt`: a v1 envelope
-with `updatedAt`, `source`, random 16-byte `salt`, random 12-byte `iv`, and base64
-`data`. Client-side AES-256-GCM uses PBKDF2-SHA-256 (210,000 iterations) and a
-separate user-selected passphrase; authenticated additional data binds the source,
-timestamp, and format. The passphrase never goes to this service. Neither the
-endpoint nor the API key appears in plaintext in the envelope. Public snapshots
-still expose keywords, accounts, and envelope metadata; weak passphrases can be
-subject to offline guessing, so use a strong unique passphrase.
+Service 0.3.0 must be deployed before userscript 0.7.4. The client uses `/v2/snapshot` exclusively so that a server without the new authenticated contract rejects the request before any cobalt configuration is uploaded. `/v1/snapshot` reads also require authentication; its writes are disabled. No database migration is needed.
 
-The server rejects malformed envelopes and extra plaintext fields. Legacy clients
-omit `cobalt`; their revision-guarded writes retain the stored envelope. Newer
-configuration events win by timestamp and source. Resetting to website mode is an
-encrypted empty configuration, not a missing field. No database migration is needed.
+Verify that unauthenticated and incorrect-token reads return `401` on both snapshot paths, authenticated v2 reads succeed, and revision-guarded writes round-trip the complete document. Do not log the token or snapshot contents. A local Worker-handler/SQLite integration test covers the client/server contract; live and Tampermonkey acceptance must be recorded separately.
 
-Clients retain an encrypted pending event across failed requests, preserve local
-configuration on decryption/read failure, and detect local edits during an in-flight
-sync. The endpoint and API key always travel together to prevent pairing an old key
-with a different endpoint. Changing the encryption passphrase is not a key-rotation
-workflow: existing ciphertext must decrypt before it can be replaced.
+## Configuration events
+
+`document.cobalt` uses `{ v: 2, updatedAt, source, config: { endpoint, apiKey } }`. Empty strings explicitly reset to website mode. Rule-only writes preserve the stored cobalt value. Failed requests retain a local pending event; local edits during an in-flight sync are deferred to the next attempt rather than overwritten.
+
+Existing encrypted data is retained until a device uploads its local configuration in the new format. The client does not need the previous encryption passphrase. A newly connected device prefers an existing v2 remote configuration unless it has a pending local edit.

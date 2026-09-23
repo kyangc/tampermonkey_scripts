@@ -1,4 +1,4 @@
-const SERVICE_VERSION = '0.2.0';
+const SERVICE_VERSION = '0.3.0';
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_ITEMS = 5000;
 const SOURCE_RE = /^[A-Za-z0-9_-]{8,80}$/;
@@ -107,21 +107,31 @@ function validateEvent(id, value) {
   return value;
 }
 
-function validateCobaltEnvelope(value) {
-  const encoded = (text, length) => typeof text === 'string' && text.length === length && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
-  if (!value || value.v !== 1 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt <= 0
-    || !SOURCE_RE.test(value.source || '') || !encoded(value.salt, 24) || !encoded(value.iv, 16)
-    || typeof value.data !== 'string' || value.data.length < 24 || value.data.length > 8192
-    || value.data.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)
-    || Object.keys(value).some((key) => !['v', 'updatedAt', 'source', 'salt', 'iv', 'data'].includes(key))) {
-    throw apiError(400, 'invalid_cobalt_ciphertext', 'cobalt 配置只能以有效密文同步。');
+function validateCobaltConfig(value) {
+  const config = value?.config;
+  if (!value || value.v !== 2 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt <= 0
+    || !SOURCE_RE.test(value.source || '') || !config
+    || typeof config.endpoint !== 'string' || typeof config.apiKey !== 'string'
+    || config.endpoint.length > 2048 || config.apiKey.length > 2048) {
+    throw apiError(400, 'invalid_cobalt_config', 'cobalt 同步配置格式无效。');
   }
-  return value;
+  const endpoint = config.endpoint.trim();
+  const apiKey = endpoint ? config.apiKey.trim() : '';
+  if (endpoint) {
+    let url;
+    try { url = new URL(endpoint); } catch (_) { throw apiError(400, 'invalid_cobalt_config', 'cobalt 地址无效。'); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      throw apiError(400, 'invalid_cobalt_config', 'cobalt 地址必须使用 HTTPS 且不包含凭据或查询参数。');
+    }
+    return { v: 2, updatedAt: value.updatedAt, source: value.source, config: { endpoint: url.href, apiKey } };
+  }
+  return { v: 2, updatedAt: value.updatedAt, source: value.source, config: { endpoint: '', apiKey: '' } };
 }
 
 function newestCobalt(left, right) {
   if (!left) return right;
   if (!right) return left;
+  if (left.v !== right.v) return right.v === 2 ? right : left;
   if (left.updatedAt !== right.updatedAt) return left.updatedAt > right.updatedAt ? left : right;
   if (left.source !== right.source) return left.source > right.source ? left : right;
   return JSON.stringify(left) > JSON.stringify(right) ? left : right;
@@ -140,7 +150,7 @@ function validateDocument(value) {
     validateEvent(id, event);
   }
   return { items: Object.fromEntries(entries), schema: 1,
-    ...(value.cobalt === undefined ? {} : { cobalt: validateCobaltEnvelope(value.cobalt) }) };
+    ...(value.cobalt === undefined ? {} : { cobalt: validateCobaltConfig(value.cobalt) }) };
 }
 
 async function readSnapshot(env) {
@@ -159,7 +169,7 @@ async function writeSnapshot(request, env) {
     throw apiError(400, 'invalid_revision', 'baseRevision 必须是非负整数。');
   }
   const document = validateDocument(body.document);
-  // Old clients omit cobalt when writing their v1 rule document. Preserve it.
+  // Rule-only writes preserve cobalt; configuration resets use an explicit empty value.
   // The revision-guarded write below still detects changes after this read.
   const current = await readSnapshot(env);
   const cobalt = newestCobalt(current.document.cobalt, document.cobalt);
@@ -191,8 +201,11 @@ async function route(request, env) {
   if (request.method === 'GET' && path === '/health') {
     return json({ ok: true, serviceVersion: SERVICE_VERSION });
   }
-  if (request.method === 'GET' && path === '/v1/snapshot') return json(await readSnapshot(env));
-  if (request.method === 'POST' && path === '/v1/snapshot') return writeSnapshot(request, env);
+  if (request.method === 'GET' && ['/v1/snapshot', '/v2/snapshot'].includes(path)) {
+    await authenticate(request, env);
+    return json(await readSnapshot(env));
+  }
+  if (request.method === 'POST' && path === '/v2/snapshot') return writeSnapshot(request, env);
   throw apiError(404, 'not_found', '接口不存在。');
 }
 

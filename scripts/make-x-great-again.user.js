@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.7.3
+// @version      0.7.4
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -322,7 +322,7 @@
       };
     }
     const cobalt = normalizeCobaltSyncEvent(value?.cobalt);
-    if (value?.cobalt !== undefined && !cobalt) throw new Error('cobalt 同步密文格式无效，已保留本地配置。');
+    if (value?.cobalt !== undefined && value.cobalt?.v !== 1 && !cobalt) throw new Error('cobalt 同步配置格式无效，已保留本地配置。');
     return { items, schema: 1, ...(cobalt ? { cobalt } : {}) };
   }
 
@@ -442,9 +442,9 @@
       const token = String(localState?.token || '').trim();
       if (token.length < 20) throw new Error('同步密钥格式不正确。');
       const fetched = await requestJson({
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
         method: 'GET',
-        url: endpoint + '/v1/snapshot',
+        url: endpoint + '/v2/snapshot',
       });
       if (fetched?.status !== 200) {
         throw new Error(fetched?.body?.error?.message || '无法读取同步列表。');
@@ -468,7 +468,7 @@
             'Content-Type': 'application/json',
           },
           method: 'POST',
-          url: endpoint + '/v1/snapshot',
+          url: endpoint + '/v2/snapshot',
         });
         if (response?.status >= 200 && response.status < 300) {
           return { document, revision: Number(response.body?.revision) || revision + 1 };
@@ -788,11 +788,11 @@
       console.warn('[MXGA] 旧缓存清理失败，下次启动重试', errorMessage(error));
     });
     const requestJson = createJsonRequestAdapter(gm);
-    const cobaltConfigSync = createCobaltConfigSync(gm, global.crypto);
+    const cobaltConfigSync = createCobaltConfigSync(gm);
     const filterSynchronizer = createFilterSynchronizer({
       endpoint: FILTER_SYNC_ENDPOINT,
       requestJson,
-      prepareDocument: (local, remote) => cobaltConfigSync.prepare(local, remote, state.filterSync.deviceId, state.filterSync.token),
+      prepareDocument: (local, remote) => cobaltConfigSync.prepare(local, remote, state.filterSync.deviceId),
     });
     const [storedSettings, storedHidden, storedPosition, storedFilterSync] = await Promise.all([
       storage.get(STORAGE_KEYS.settings, DEFAULT_SETTINGS),
@@ -811,7 +811,6 @@
       filterSync,
       filterSyncing: false,
       filterSyncError: '',
-      cobaltSyncEnabled: await cobaltConfigSync.enabled(),
     };
     if (state.filterSync.token) {
       state.filterSync.document = reconcileFilterDocument(
@@ -831,7 +830,6 @@
     let filterSyncQueued = false;
     function render() {
       ui.render({
-        cobaltSyncEnabled: state.cobaltSyncEnabled,
         settings: state.settings,
         hiddenRecords: state.hidden.list(),
         filterSync: {
@@ -1031,16 +1029,6 @@
       scanner.schedule();
     }
 
-    async function configureCobaltSync(passphrase) {
-      try {
-        if (passphrase && passphrase === state.filterSync.token) throw new Error('请使用独立于同步密钥的配置加密口令。');
-        await cobaltConfigSync.configure(passphrase);
-        state.cobaltSyncEnabled = await cobaltConfigSync.enabled();
-        state.filterSyncError = '';
-        render();
-        if (passphrase) await syncFiltersNow();
-      } catch (error) { state.filterSyncError = errorMessage(error); render(); }
-    }
     document.addEventListener('mxga-cobalt-config-saved', () => {
       void cobaltConfigSync.markChanged().then(() => {
         if (state.filterSync.token) scheduleFilterSync();
@@ -1049,7 +1037,6 @@
 
     ui = createMxgaUi(global,
       {
-        onConfigureCobaltSync: configureCobaltSync,
         onConfigureCobalt: () => createMxgaCobalt(global).openCobaltDownload(),
         onEnabledChange: (enabled) => {
           void updateSettings({ enabled });
@@ -1222,20 +1209,15 @@ function createMxgaUi(global, callbacks, initialPosition) {
         </section>
         <section id="mxga-settings" role="tabpanel" aria-labelledby="mxga-tab-settings" data-page="settings" hidden>
           <details><summary>个人规则同步</summary><div class="sync-status" data-role="filter-sync-status"></div>
-            <p class="help">屏蔽词和账号列表公开可读；同步密钥只用于防止他人写入。未连接时仅保存在本机。</p>
+            <p class="help">关键词、屏蔽账号和 cobalt 地址/API Key 使用同一同步密钥一起同步。未连接时仅保存在本机。</p>
             <input type="password" data-role="filter-sync-token" aria-label="多端同步密钥" placeholder="粘贴同步密钥" autocomplete="off" spellcheck="false">
             <div class="sync-error" role="status" data-role="filter-sync-error"></div>
             <div class="actions"><button class="button" data-action="save-filter-sync">保存并同步</button><button class="button" data-action="sync-filters" hidden>立即同步</button><button class="button" data-action="disconnect-filter-sync" hidden>断开</button></div>
-            <hr><h3>cobalt 配置加密同步</h3>
-            <p class="help">地址和 API Key 使用独立口令加密。所有设备填写相同口令（至少 12 字符）；口令只留在本机，不能找回。首次启用优先读取已有云端配置。</p>
-            <input type="password" data-role="cobalt-passphrase" aria-label="配置加密口令" placeholder="独立于同步密钥的加密口令" autocomplete="off">
-            <div class="sync-status" data-role="cobalt-sync-status"></div>
-            <div class="actions"><button class="button" data-action="enable-cobalt-sync">启用配置同步</button><button class="button" data-action="disable-cobalt-sync" hidden>暂停配置同步</button></div>
           </details>
           <div class="settings-row"><h3>视频下载</h3><p class="help">默认打开 cobalt 网页，也可连接自建 API 自动解析并下载。</p><button class="button" data-action="configure-cobalt">视频下载设置</button></div>
           <div class="settings-row"><h3>浮窗位置</h3><p class="help">拖动 MXGA 按钮，松手后吸附到左右边缘。</p><button class="button" data-action="reset-position">重置位置</button></div>
-          <p class="privacy">启用过滤只影响页面隐藏；分享图和下载始终可用。同步不包含浏览页面或命中结果；cobalt 凭据仅在启用配置同步后以密文上传。</p>
-          <div class="links"><span>MXGA 0.7.2</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
+          <p class="privacy">启用过滤只影响页面隐藏；分享图和下载始终可用。同步不包含浏览页面或命中结果；同步内容仅凭同步密钥读取和修改。</p>
+          <div class="links"><span>MXGA 0.7.4</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
         </section>
       </div>
     </section>
@@ -1414,8 +1396,6 @@ function createMxgaUi(global, callbacks, initialPosition) {
     elements.control.setAttribute('aria-label', 'MXGA · ' + (view.settings.enabled ? '过滤已开启' : '过滤已暂停'));
     role('keyword-count').textContent = view.settings.blockedKeywords.length + ' 条';
     if (!keywordDirty) elements.blockedKeywords.value = view.settings.blockedKeywords.join('\n');
-    role('cobalt-sync-status').textContent = view.cobaltSyncEnabled ? '已启用 · 需要同时连接个人规则同步' : '未启用 · cobalt 配置仅本机';
-    action('disable-cobalt-sync').hidden = !view.cobaltSyncEnabled;
     const sync = view.filterSync;
     if (!tokenDirty) elements.filterSyncToken.value = sync.token || '';
     role('filter-sync-status').textContent = sync.syncing ? '同步中…' : sync.token ? '已连接 · ' + dateLabel(sync.lastSyncAt) : '未连接 · 仅本机';
@@ -1484,8 +1464,6 @@ function createMxgaUi(global, callbacks, initialPosition) {
         }
       } finally { saving = false; target.disabled = false; }
     } else if (name === 'save-filter-sync') { tokenDirty = false; callbacks.onFilterSyncTokenChange(elements.filterSyncToken.value); }
-    else if (name === 'enable-cobalt-sync') { const phrase = role('cobalt-passphrase').value; if (!phrase) { reportError('请填写至少 12 字符的配置加密口令。'); return; } await callbacks.onConfigureCobaltSync(phrase); role('cobalt-passphrase').value = ''; }
-    else if (name === 'disable-cobalt-sync') { await callbacks.onConfigureCobaltSync(''); action('enable-cobalt-sync').focus(); }
     else if (name === 'sync-filters') callbacks.onFilterSync();
     else if (name === 'disconnect-filter-sync') { tokenDirty = false; elements.filterSyncToken.value = ''; callbacks.onFilterSyncTokenChange(''); }
     else if (name === 'configure-cobalt') { setPanel(false); callbacks.onConfigureCobalt(); }
@@ -1507,15 +1485,29 @@ function createMxgaUi(global, callbacks, initialPosition) {
 }
 
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Only ciphertext leaves GM storage. The encryption passphrase is separate from the server write token.
+// Cobalt settings share the authenticated preferences snapshot and sync token.
+function cobaltSyncConfig(value) {
+  if (!value || typeof value.endpoint !== 'string' || typeof value.apiKey !== 'string') {
+    throw new Error('cobalt 配置格式无效。');
+  }
+  const endpoint = value.endpoint.trim();
+  const apiKey = endpoint ? value.apiKey.trim() : '';
+  if (endpoint.length > 2048 || apiKey.length > 2048) throw new Error('cobalt 配置过长，无法同步。');
+  if (!endpoint) return { endpoint: '', apiKey: '' };
+  let url;
+  try { url = new URL(endpoint); } catch (_) { throw new Error('cobalt 地址无效，未同步。'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new Error('cobalt 地址必须是无凭据、无查询参数的 HTTPS 地址。');
+  }
+  return { endpoint: url.href, apiKey };
+}
+
 function normalizeCobaltSyncEvent(value) {
-  const base64 = (text, length) => typeof text === 'string' && text.length === length && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
-  if (!value || value.v !== 1 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt <= 0
-    || !/^[A-Za-z0-9_-]{8,80}$/.test(value.source || '')
-    || !base64(value.salt, 24) || !base64(value.iv, 16)
-    || typeof value.data !== 'string' || value.data.length < 24 || value.data.length > 8192
-    || value.data.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)) return null;
-  return { v: 1, updatedAt: value.updatedAt, source: value.source, salt: value.salt, iv: value.iv, data: value.data };
+  if (!value || value.v !== 2 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt <= 0
+    || !/^[A-Za-z0-9_-]{8,80}$/.test(value.source || '')) return null;
+  try {
+    return { v: 2, updatedAt: value.updatedAt, source: value.source, config: cobaltSyncConfig(value.config) };
+  } catch (_) { return null; }
 }
 
 function newestCobaltSyncEvent(left, right) {
@@ -1527,91 +1519,44 @@ function newestCobaltSyncEvent(left, right) {
   return JSON.stringify(b) > JSON.stringify(a) ? b : a;
 }
 
-function createCobaltConfigSync(gm, webCrypto = globalThis.crypto) {
+function createCobaltConfigSync(gm) {
   const CONFIG_KEY = 'mxga:cobalt:v1';
-  const PRIVATE_KEY = 'mxga:cobalt-sync:v1';
-  const text = new TextEncoder();
-  const encode = (bytes) => btoa(String.fromCharCode(...bytes));
-  const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+  const STATE_KEY = 'mxga:cobalt-sync:v2';
   let preparedHash = null;
-  function configValue(value) {
-    const endpoint = String(value?.endpoint || '').trim();
-    const apiKey = endpoint ? String(value?.apiKey || '').trim() : '';
-    if (endpoint.length > 2048 || apiKey.length > 2048) throw new Error('cobalt 配置过长，无法同步。');
-    if (endpoint) {
-      let url;
-      try { url = new URL(endpoint); } catch (_) { throw new Error('cobalt 地址无效，未同步。'); }
-      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('cobalt 地址必须是无凭据、无查询参数的 HTTPS 地址。');
-      return { endpoint: url.href, apiKey };
-    }
-    return { endpoint: '', apiKey: '' };
-  }
-  const fingerprint = async (config) => encode(new Uint8Array(await webCrypto.subtle.digest('SHA-256', text.encode(JSON.stringify(config)))));
-  const aad = (event) => text.encode(`mxga-cobalt-v1:${event.source}:${event.updatedAt}`);
-  async function derive(passphrase, salt) {
-    const material = await webCrypto.subtle.importKey('raw', text.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-    return webCrypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 210000 }, material,
-      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  }
-  async function encrypt(config, passphrase, source, updatedAt) {
-    const salt = webCrypto.getRandomValues(new Uint8Array(16));
-    const iv = webCrypto.getRandomValues(new Uint8Array(12));
-    const event = { v: 1, source, updatedAt, salt: encode(salt), iv: encode(iv) };
-    const key = await derive(passphrase, salt);
-    const data = await webCrypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(event) }, key, text.encode(JSON.stringify(configValue(config))));
-    return { ...event, data: encode(new Uint8Array(data)) };
-  }
-  async function decrypt(value, passphrase) {
-    const event = normalizeCobaltSyncEvent(value);
-    if (!event) throw new Error('cobalt 同步密文格式无效，本地配置未更改。');
-    try {
-      const key = await derive(passphrase, decode(event.salt));
-      const clear = await webCrypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(event.iv), additionalData: aad(event) }, key, decode(event.data));
-      return configValue(JSON.parse(new TextDecoder().decode(clear)));
-    } catch (_) { throw new Error('cobalt 配置解密失败，请检查配置加密口令；本地配置未更改。'); }
-  }
-  async function configure(passphrase) {
-    if (passphrase && (passphrase.length < 12 || passphrase.length > 1024)) throw new Error('配置加密口令须为 12–1024 个字符，建议使用密码管理器生成。');
-    const state = await gm.getValue(PRIVATE_KEY, {});
-    await gm.setValue(PRIVATE_KEY, { ...state, passphrase });
-  }
-  async function enabled() { return Boolean((await gm.getValue(PRIVATE_KEY, {}))?.passphrase); }
+  const readConfig = async () => cobaltSyncConfig(await gm.getValue(CONFIG_KEY, { endpoint: '', apiKey: '' }));
+  const fingerprint = (config) => JSON.stringify(config);
   async function markChanged() {
-    const state = await gm.getValue(PRIVATE_KEY, {});
-    if (state?.passphrase && state.fingerprint !== await fingerprint(configValue(await gm.getValue(CONFIG_KEY, {})))) {
-      await gm.setValue(PRIVATE_KEY, { ...state, dirty: true });
+    const state = await gm.getValue(STATE_KEY, {});
+    if (state.fingerprint !== fingerprint(await readConfig())) {
+      await gm.setValue(STATE_KEY, { ...state, dirty: true });
     }
   }
-  async function prepare(local, remote, source, syncToken = '') {
-    const state = await gm.getValue(PRIVATE_KEY, {});
-    if (!state?.passphrase) { preparedHash = null; return local; }
-    if (state.passphrase === syncToken) throw new Error('配置加密口令必须与同步密钥不同。');
-    const config = configValue(await gm.getValue(CONFIG_KEY, {}));
-    preparedHash = await fingerprint(config);
+  async function prepare(local, remote, source) {
+    const state = await gm.getValue(STATE_KEY, {});
+    const config = await readConfig();
+    preparedHash = fingerprint(config);
     let event = newestCobaltSyncEvent(newestCobaltSyncEvent(local.cobalt, remote.cobalt), state.pending);
-    // Verify the shared passphrase before any overwrite, including on a fresh device.
-    if (event) await decrypt(event, state.passphrase);
     const changed = state.dirty || (state.fingerprint && state.fingerprint !== preparedHash)
       || (!event && Boolean(config.endpoint));
     if (changed) {
-      event = await encrypt(config, state.passphrase, source, Math.max(Date.now(), (event?.updatedAt || 0) + 1));
-      // Keep an encrypted outbox across failed requests and browser restarts.
-      await gm.setValue(PRIVATE_KEY, { ...state, dirty: false, fingerprint: preparedHash, pending: event });
+      event = { v: 2, source, updatedAt: Math.max(Date.now(), (event?.updatedAt || 0) + 1), config };
+      // Persist pending edits before the request so retry/restart cannot lose them.
+      await gm.setValue(STATE_KEY, { dirty: false, fingerprint: preparedHash, pending: event });
     }
     return event ? { ...local, cobalt: event } : local;
   }
-  async function apply(event) {
-    const state = await gm.getValue(PRIVATE_KEY, {});
-    if (!state?.passphrase || !event || preparedHash === null) return true;
-    const config = await decrypt(event, state.passphrase);
-    const current = configValue(await gm.getValue(CONFIG_KEY, {}));
-    // A local edit while the request was in flight must get its own later sync.
-    if (await fingerprint(current) !== preparedHash || state.dirty) return false;
-    await gm.setValue(CONFIG_KEY, config);
-    await gm.setValue(PRIVATE_KEY, { ...state, dirty: false, fingerprint: await fingerprint(config), pending: null });
+  async function apply(value) {
+    if (!value || preparedHash === null) return true;
+    const event = normalizeCobaltSyncEvent(value);
+    if (!event) throw new Error('cobalt 同步配置格式无效，本地配置未更改。');
+    const state = await gm.getValue(STATE_KEY, {});
+    // A local edit while the request was in flight needs its own later sync.
+    if (fingerprint(await readConfig()) !== preparedHash || state.dirty) return false;
+    await gm.setValue(CONFIG_KEY, event.config);
+    await gm.setValue(STATE_KEY, { dirty: false, fingerprint: fingerprint(event.config), pending: null });
     return true;
   }
-  return { encrypt, decrypt, configure, enabled, markChanged, prepare, apply };
+  return { markChanged, prepare, apply };
 }
 
 // Vendored qrcode-generator 2.0.4; upstream MIT notice retained below.
@@ -4342,7 +4287,7 @@ function createMxgaCobalt(global) {
       <p>默认打开 cobalt 网页并带入帖子链接。填写自建 API 后，改由该服务解析视频。</p>
       <form><label>cobalt API 地址<input name="endpoint" type="url" placeholder="留空使用 cobalt 网页" autocomplete="off"></label>
       <label>API Key（可选）<input name="key" type="password" autocomplete="off"></label>
-      <p>地址和 API Key 默认仅在本机保存；在 MXGA 设置中启用配置加密同步后可跨设备同步。清空地址并保存可恢复默认。</p>
+      <p>地址和 API Key 默认仅在本机保存；连接 MXGA 个人规则同步后会一起同步，无需额外设置。清空地址并保存可恢复默认。</p>
       <button class="submit" type="submit" disabled>${settingsOnly ? '保存设置' : '保存并解析'}</button></form>
       <p class="status" role="status" aria-live="polite">正在读取配置…</p><div class="results"></div>
     </section></div>`;

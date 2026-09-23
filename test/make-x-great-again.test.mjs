@@ -115,7 +115,7 @@ test('multi-device filter documents preserve newer removals and independent addi
   ]);
 });
 
-test('filter sync merges a public snapshot and retries a concurrent revision', async () => {
+test('filter sync merges an authenticated snapshot and retries a concurrent revision', async () => {
   const local = core.reconcileFilterDocument(
     { items: {}, schema: 1 },
     {
@@ -166,6 +166,8 @@ test('filter sync merges a public snapshot and retries a concurrent revision', a
   );
   assert.equal(result.revision, 4);
   assert.equal(requests[0].method, 'GET');
+  assert.equal(requests[0].headers.Authorization, 'Bearer write-token-long-enough-for-tests');
+  assert.ok(requests.every((request) => request.url.endsWith('/v2/snapshot')));
   assert.equal(requests[1].body.baseRevision, 2);
   assert.equal(requests[2].body.baseRevision, 3);
   assert.equal(requests[2].headers.Authorization, 'Bearer write-token-long-enough-for-tests');
@@ -365,12 +367,13 @@ test('settings panel exposes a local multiline keyword editor that can be saved 
   assert.match(scriptText, /仅匹配推文正文/);
 });
 
-test('published userscript exposes public multi-device filter sync controls', () => {
+test('published userscript exposes unified multi-device filter sync controls', () => {
   assert.ok(metadataValues('connect').includes('mxga-sync.1109.workers.dev'));
   assert.match(scriptText, /mxga:filter-sync:v1/);
   assert.match(scriptText, /data-role="filter-sync-token"/);
   assert.match(scriptText, /data-action="save-filter-sync"/);
-  assert.match(scriptText, /屏蔽词和账号列表公开可读/);
+  assert.doesNotMatch(scriptText, /cobalt-passphrase|enable-cobalt-sync|配置加密口令/);
+  assert.match(scriptText, /关键词、屏蔽账号和 cobalt 地址\/API Key 使用同一同步密钥一起同步/);
   assert.match(scriptText, /scheduleFilterSync\(\)/);
 });
 

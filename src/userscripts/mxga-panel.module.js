@@ -81,20 +81,15 @@ function createMxgaUi(global, callbacks, initialPosition) {
         </section>
         <section id="mxga-settings" role="tabpanel" aria-labelledby="mxga-tab-settings" data-page="settings" hidden>
           <details><summary>个人规则同步</summary><div class="sync-status" data-role="filter-sync-status"></div>
-            <p class="help">屏蔽词和账号列表公开可读；同步密钥只用于防止他人写入。未连接时仅保存在本机。</p>
+            <p class="help">关键词、屏蔽账号和 cobalt 地址/API Key 使用同一同步密钥一起同步。未连接时仅保存在本机。</p>
             <input type="password" data-role="filter-sync-token" aria-label="多端同步密钥" placeholder="粘贴同步密钥" autocomplete="off" spellcheck="false">
             <div class="sync-error" role="status" data-role="filter-sync-error"></div>
             <div class="actions"><button class="button" data-action="save-filter-sync">保存并同步</button><button class="button" data-action="sync-filters" hidden>立即同步</button><button class="button" data-action="disconnect-filter-sync" hidden>断开</button></div>
-            <hr><h3>cobalt 配置加密同步</h3>
-            <p class="help">地址和 API Key 使用独立口令加密。所有设备填写相同口令（至少 12 字符）；口令只留在本机，不能找回。首次启用优先读取已有云端配置。</p>
-            <input type="password" data-role="cobalt-passphrase" aria-label="配置加密口令" placeholder="独立于同步密钥的加密口令" autocomplete="off">
-            <div class="sync-status" data-role="cobalt-sync-status"></div>
-            <div class="actions"><button class="button" data-action="enable-cobalt-sync">启用配置同步</button><button class="button" data-action="disable-cobalt-sync" hidden>暂停配置同步</button></div>
           </details>
           <div class="settings-row"><h3>视频下载</h3><p class="help">默认打开 cobalt 网页，也可连接自建 API 自动解析并下载。</p><button class="button" data-action="configure-cobalt">视频下载设置</button></div>
           <div class="settings-row"><h3>浮窗位置</h3><p class="help">拖动 MXGA 按钮，松手后吸附到左右边缘。</p><button class="button" data-action="reset-position">重置位置</button></div>
-          <p class="privacy">启用过滤只影响页面隐藏；分享图和下载始终可用。同步不包含浏览页面或命中结果；cobalt 凭据仅在启用配置同步后以密文上传。</p>
-          <div class="links"><span>MXGA 0.7.2</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
+          <p class="privacy">启用过滤只影响页面隐藏；分享图和下载始终可用。同步不包含浏览页面或命中结果；同步内容仅凭同步密钥读取和修改。</p>
+          <div class="links"><span>MXGA 0.7.4</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
         </section>
       </div>
     </section>
@@ -273,8 +268,6 @@ function createMxgaUi(global, callbacks, initialPosition) {
     elements.control.setAttribute('aria-label', 'MXGA · ' + (view.settings.enabled ? '过滤已开启' : '过滤已暂停'));
     role('keyword-count').textContent = view.settings.blockedKeywords.length + ' 条';
     if (!keywordDirty) elements.blockedKeywords.value = view.settings.blockedKeywords.join('\n');
-    role('cobalt-sync-status').textContent = view.cobaltSyncEnabled ? '已启用 · 需要同时连接个人规则同步' : '未启用 · cobalt 配置仅本机';
-    action('disable-cobalt-sync').hidden = !view.cobaltSyncEnabled;
     const sync = view.filterSync;
     if (!tokenDirty) elements.filterSyncToken.value = sync.token || '';
     role('filter-sync-status').textContent = sync.syncing ? '同步中…' : sync.token ? '已连接 · ' + dateLabel(sync.lastSyncAt) : '未连接 · 仅本机';
@@ -343,8 +336,6 @@ function createMxgaUi(global, callbacks, initialPosition) {
         }
       } finally { saving = false; target.disabled = false; }
     } else if (name === 'save-filter-sync') { tokenDirty = false; callbacks.onFilterSyncTokenChange(elements.filterSyncToken.value); }
-    else if (name === 'enable-cobalt-sync') { const phrase = role('cobalt-passphrase').value; if (!phrase) { reportError('请填写至少 12 字符的配置加密口令。'); return; } await callbacks.onConfigureCobaltSync(phrase); role('cobalt-passphrase').value = ''; }
-    else if (name === 'disable-cobalt-sync') { await callbacks.onConfigureCobaltSync(''); action('enable-cobalt-sync').focus(); }
     else if (name === 'sync-filters') callbacks.onFilterSync();
     else if (name === 'disconnect-filter-sync') { tokenDirty = false; elements.filterSyncToken.value = ''; callbacks.onFilterSyncTokenChange(''); }
     else if (name === 'configure-cobalt') { setPanel(false); callbacks.onConfigureCobalt(); }

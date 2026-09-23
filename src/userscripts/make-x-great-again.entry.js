@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.7.3
+// @version      0.7.4
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -322,7 +322,7 @@
       };
     }
     const cobalt = normalizeCobaltSyncEvent(value?.cobalt);
-    if (value?.cobalt !== undefined && !cobalt) throw new Error('cobalt 同步密文格式无效，已保留本地配置。');
+    if (value?.cobalt !== undefined && value.cobalt?.v !== 1 && !cobalt) throw new Error('cobalt 同步配置格式无效，已保留本地配置。');
     return { items, schema: 1, ...(cobalt ? { cobalt } : {}) };
   }
 
@@ -442,9 +442,9 @@
       const token = String(localState?.token || '').trim();
       if (token.length < 20) throw new Error('同步密钥格式不正确。');
       const fetched = await requestJson({
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
         method: 'GET',
-        url: endpoint + '/v1/snapshot',
+        url: endpoint + '/v2/snapshot',
       });
       if (fetched?.status !== 200) {
         throw new Error(fetched?.body?.error?.message || '无法读取同步列表。');
@@ -468,7 +468,7 @@
             'Content-Type': 'application/json',
           },
           method: 'POST',
-          url: endpoint + '/v1/snapshot',
+          url: endpoint + '/v2/snapshot',
         });
         if (response?.status >= 200 && response.status < 300) {
           return { document, revision: Number(response.body?.revision) || revision + 1 };
@@ -788,11 +788,11 @@
       console.warn('[MXGA] 旧缓存清理失败，下次启动重试', errorMessage(error));
     });
     const requestJson = createJsonRequestAdapter(gm);
-    const cobaltConfigSync = createCobaltConfigSync(gm, global.crypto);
+    const cobaltConfigSync = createCobaltConfigSync(gm);
     const filterSynchronizer = createFilterSynchronizer({
       endpoint: FILTER_SYNC_ENDPOINT,
       requestJson,
-      prepareDocument: (local, remote) => cobaltConfigSync.prepare(local, remote, state.filterSync.deviceId, state.filterSync.token),
+      prepareDocument: (local, remote) => cobaltConfigSync.prepare(local, remote, state.filterSync.deviceId),
     });
     const [storedSettings, storedHidden, storedPosition, storedFilterSync] = await Promise.all([
       storage.get(STORAGE_KEYS.settings, DEFAULT_SETTINGS),
@@ -811,7 +811,6 @@
       filterSync,
       filterSyncing: false,
       filterSyncError: '',
-      cobaltSyncEnabled: await cobaltConfigSync.enabled(),
     };
     if (state.filterSync.token) {
       state.filterSync.document = reconcileFilterDocument(
@@ -831,7 +830,6 @@
     let filterSyncQueued = false;
     function render() {
       ui.render({
-        cobaltSyncEnabled: state.cobaltSyncEnabled,
         settings: state.settings,
         hiddenRecords: state.hidden.list(),
         filterSync: {
@@ -1031,16 +1029,6 @@
       scanner.schedule();
     }
 
-    async function configureCobaltSync(passphrase) {
-      try {
-        if (passphrase && passphrase === state.filterSync.token) throw new Error('请使用独立于同步密钥的配置加密口令。');
-        await cobaltConfigSync.configure(passphrase);
-        state.cobaltSyncEnabled = await cobaltConfigSync.enabled();
-        state.filterSyncError = '';
-        render();
-        if (passphrase) await syncFiltersNow();
-      } catch (error) { state.filterSyncError = errorMessage(error); render(); }
-    }
     document.addEventListener('mxga-cobalt-config-saved', () => {
       void cobaltConfigSync.markChanged().then(() => {
         if (state.filterSync.token) scheduleFilterSync();
@@ -1049,7 +1037,6 @@
 
     ui = createMxgaUi(global,
       {
-        onConfigureCobaltSync: configureCobaltSync,
         onConfigureCobalt: () => createMxgaCobalt(global).openCobaltDownload(),
         onEnabledChange: (enabled) => {
           void updateSettings({ enabled });

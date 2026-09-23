@@ -180,7 +180,10 @@
       const embedded = node.closest?.('[role="link"][data-href*="/status/"]');
       return !embedded || !article.contains?.(embedded);
     });
-    if (!ownNodes('[data-testid="videoPlayer"], video').length) return '';
+    const hasPlayer = ownNodes('[data-testid="videoPlayer"], video').length > 0;
+    const hasVideoPreview = ownNodes('[data-testid="previewInterstitial"]')
+      .some((preview) => Boolean(preview.querySelector?.('[data-testid="playButton"]')));
+    if (!hasPlayer && !hasVideoPreview) return '';
     const time = ownNodes('time[datetime]')[0];
     const timestampUrl = normalizeVideoTweetUrl(time?.closest?.('a[href*="/status/"]')?.getAttribute?.('href'));
     if (timestampUrl) return timestampUrl;

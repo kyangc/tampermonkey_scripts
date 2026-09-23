@@ -160,3 +160,24 @@ test('configured API remains selected and malformed saved endpoints require sett
   assert.deepEqual(core.cobaltDownloadRoute({ endpoint: 'http://private.example' }, tweet), { mode: 'settings', url: '' });
   assert.throws(() => core.cobaltDownloadRoute({}, 'https://evil.example/example/status/123'));
 });
+
+
+test('logged-in unplayed video preview is downloadable before a player is mounted', () => {
+  const article = {};
+  const quote = {};
+  const preview = (owner, playable = true) => ({
+    closest: selector => selector === 'article' ? owner : null,
+    querySelector: selector => playable && selector === '[data-testid="playButton"]' ? {} : null,
+  });
+  let previews = [preview(article), preview(quote)];
+  const link = { getAttribute: () => '/example/status/123', closest: selector => selector === 'article' ? article : null };
+  const nodes = selector => selector === '[data-testid="previewInterstitial"]' ? previews
+    : selector === 'a[href*="/status/"]' ? [link] : [];
+  article.querySelector = selector => nodes(selector)[0] || null;
+  article.querySelectorAll = nodes;
+  assert.equal(core.extractVideoTweetUrl(article), tweet);
+  previews = [preview(quote)];
+  assert.equal(core.extractVideoTweetUrl(article), '');
+  previews = [preview(article, false)];
+  assert.equal(core.extractVideoTweetUrl(article), '');
+});

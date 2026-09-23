@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.6.2
+// @version      0.6.3
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -2872,7 +2872,10 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
       const embedded = node.closest?.('[role="link"][data-href*="/status/"]');
       return !embedded || !article.contains?.(embedded);
     });
-    if (!ownNodes('[data-testid="videoPlayer"], video').length) return '';
+    const hasPlayer = ownNodes('[data-testid="videoPlayer"], video').length > 0;
+    const hasVideoPreview = ownNodes('[data-testid="previewInterstitial"]')
+      .some((preview) => Boolean(preview.querySelector?.('[data-testid="playButton"]')));
+    if (!hasPlayer && !hasVideoPreview) return '';
     const time = ownNodes('time[datetime]')[0];
     const timestampUrl = normalizeVideoTweetUrl(time?.closest?.('a[href*="/status/"]')?.getAttribute?.('href'));
     if (timestampUrl) return timestampUrl;

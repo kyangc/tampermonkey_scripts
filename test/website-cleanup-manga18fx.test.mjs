@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const core = require('../scripts/manga18fx-ad-cleaner.user.js');
+const core = require('../scripts/website-cleanup.user.js').manga18fx;
 
 test('blocks Manga18fx ad and tracking script hosts while allowing site assets', () => {
   assert.equal(core.isBlockedAdUrl('https://a.magsrv.com/ad-provider.js'), true);

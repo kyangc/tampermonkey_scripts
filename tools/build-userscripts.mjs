@@ -6,11 +6,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const bundles = [
   {
-    output: 'scripts/ai-agent-book-reading-notes.user.js',
+    output: 'scripts/website-cleanup.user.js',
     sources: [
-      'src/userscripts/ai-agent-book-reading-notes.metadata.js',
-      'src/userscripts/ai-agent-book-reading-notes.core.js',
-      'src/userscripts/ai-agent-book-reading-notes.entry.js',
+      'src/userscripts/website-cleanup.metadata.js',
+      'src/userscripts/website-cleanup.manga18fx.module.js',
+      'src/userscripts/website-cleanup.simpcity.module.js',
     ],
   },
   {

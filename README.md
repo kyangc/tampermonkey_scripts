@@ -1,226 +1,53 @@
 # 油猴脚本
 
-[![Userscript checks](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml/badge.svg)](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml)
+让常用网页更顺手的四个 Tampermonkey 脚本，按需安装即可。
 
-这是我个人使用的 Tampermonkey / 油猴脚本仓库。
+## 安装
+
+1. 在桌面浏览器中安装并启用 Tampermonkey，允许扩展运行用户脚本。
+2. 点击下表中的「安装」，在 Tampermonkey 页面确认。
+3. 刷新对应网站，开始使用。后续可通过 Tampermonkey 检查更新。
 
 ## 脚本列表
 
-### AI Agent Book 读书笔记
+| 脚本 | 用途 | 安装 |
+| --- | --- | --- |
+| **网页浏览体验优化** | 清理 Manga18fx、SimpCity 和 Turbo 嵌入播放器的广告与弹窗 | [安装](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/website-cleanup.user.js) |
+| **MXGA** | 在 X 上过滤内容、生成推文分享图、下载视频 | [安装](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js) |
+| **M-Team 增强** | 高亮新热种，置灰已访问的种子 | [安装](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/m-team-torrent-enhancer.user.js) |
+| **Telegram WebK 下载器** | 单条或批量下载当前聊天的图片、视频和文档 | [安装](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/telegram-webk-media-downloader.user.js) |
 
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/ai-agent-book-reading-notes.user.js)
+### 网页浏览体验优化
 
-[点击安装 / 更新舒适阅读 Stylus 样式](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/styles/ai-agent-book-comfort-reading.user.css)
+- **适用网站**：Manga18fx、SimpCity（含 www）和 Turbo 的 `/embed/` 播放器页面。
+- **广告清理**：清理横幅、漂浮广告、广告弹窗与跳转。
+- **自动生效**：安装后无需设置；保留 Manga18fx 的年龄确认。
 
-为《AI Agents in Depth》电子书增加本地优先的阅读批注能力：
+### MXGA
 
-- 选中正文后通过浮动工具栏添加淡色画笔高亮、手绘划线或带观点的手工批注。
-- 使用位置、原文、上下文和段落结构组合锚点；可自动适应空白、标点和部分措辞变化。
-- 有歧义的新版原文会等待手动确认，也可重新选择文字完成关联，并保留旧原文历史。
-- 在右下角的读书笔记面板中按本页或全书查看、定位、编辑和删除记录。
-- 默认只保存在 Tampermonkey 本地；也可连接自建的 Cloudflare Worker + D1，在不同设备间增量同步。
-- 云同步采用设备独立凭证和 AES-GCM 端到端加密；Worker 与 D1 只接触密文。
-- 新设备必须通过可信设备生成的五分钟一次性配对码加入；两端还会显示同一组公钥安全码，可信设备核对一致后才批准。
-- 超过单条同步上限的批注仍会安全保留在本机，并在面板中明确提示，不会阻塞其他记录。
-- 可导出版本化 JSON 便携备份并合并恢复；同步密钥和设备凭据可另存为带独立口令的加密恢复包。
-- 可按全书章节顺序导出为 Markdown 或独立 HTML 网页。
+- **适用网站**：桌面 Chrome / Edge 上的 `x.com` 和 `twitter.com`。
+- **内容过滤**：按关键词和账号屏蔽内容，也可选中推文文字直接屏蔽短语。
+- **分享图**：从推文分享菜单生成图片卡片，方便保存和分享。
+- **视频下载**：从分享菜单打开 cobalt 下载，也可连接自己的下载服务。
+- **规则管理**：点击页面边缘的 **MXGA** 按钮设置；规则默认保存在本机，可选多端同步，启用后远端规则快照公开可读。
+- **使用说明**：请勿与原版 MXGA 扩展同时启用。[查看详细用法](docs/mxga.md)。
 
-适用页面：
+### M-Team 增强
 
-- `https://bojieli.github.io/ai-agent-book/`
-- `https://bojieli.github.io/ai-agent-book/book/*`
+- **适用网站**：`kp.m-team.cc`。
+- **新热种高亮**：在列表中突出显示新发布的热门种子。
+- **已访问置灰**：访问详情后，对应种子行轻度置灰，方便辨认看过的内容。
 
-云同步后端位于 [`services/reading-notes-sync`](services/reading-notes-sync)，部署步骤和安全边界见其中的 [README](services/reading-notes-sync/README.md)。未配置同步服务时，脚本不会发出任何笔记网络请求。
+### Telegram WebK 下载器
 
-开发时请修改 `src/userscripts/ai-agent-book-reading-notes.*.js`，再运行 `npm run build:userscripts`；`scripts/` 下的安装文件是构建产物。
+- **适用网站**：`web.telegram.org/k/` 和 `webk.telegram.org`。
+- **媒体下载**：单条或批量下载当前聊天的图片、视频和文档。
+- **筛选范围**：按媒体类型和日期筛选需要下载的内容。
+- **本地保存**：在右下角 **WebK Media** 面板选择目录；需要支持目录选择的桌面浏览器。
+- **结果确认**：下载完成后查看报告，确认成功与失败项。[查看完整用法](docs/telegram-webk-media-downloader.md)。
 
-当前个人同步服务地址：
+## 反馈与开发
 
-```text
-https://reading-notes-sync.1109.workers.dev
-```
+遇到问题可在 [Issues](https://github.com/kyangc/tampermonkey_scripts/issues) 提供脚本名称、版本和复现步骤，请勿附带账号凭据或私人内容。参与维护请看 [开发指南](docs/development.md)。
 
-### Make X Great Again（桌面网页 userscript）
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js)
-
-这是对 [foru17/make-x-great-again](https://github.com/foru17/make-x-great-again) 的 AGPL-3.0-or-later userscript 衍生版，支持桌面 Chrome / Edge + Tampermonkey，不再维护 iOS / iPadOS 专属适配。许可证全文见 [`LICENSES/AGPL-3.0.txt`](LICENSES/AGPL-3.0.txt)。
-
-当前功能：
-
-- 仅依据个人关键词和手动屏蔽账号过滤内容，不再下载公共账号名单或官方白名单。升级时按键删除旧名单缓存，不读取大名单；个人规则、同步配置和 cobalt 配置沿用原存储。
-- 视频帖的原生分享菜单增加“下载视频”：未配置 API 时直接打开 cobalt 网页并带入帖子链接；已配置时一次点击即自动解析并下载，不再打开解析浮窗；多视频依次下载，只显示进度提示，可取消。cobalt 解析失败时自动尝试从当前 X 页面已加载的媒体信息中下载最高码率 MP4；没有媒体信息时提示打开帖子并刷新后重试，仅有 HLS 时提示暂不支持分片下载。失败时提供重试及未完成文件的手动链接，重试不会重复下载已完成文件。可在 MXGA 面板的“视频下载设置”中填写 HTTPS API 地址和可选 API Key；清空地址并保存即可恢复网页模式。配置默认仅存于本机 GM 存储；可在“设置 → 个人规则同步”中另外启用 cobalt 配置加密同步。自动下载使用 Tampermonkey 下载接口，更新时可能需要允许新增的下载权限；文件名冲突时另存，不覆盖旧文件。脚本不将整个视频加载到页面内存。
-- 下载入口仅识别当前帖自身的播放器或带播放按钮的未播放视频预览，以及可确认归属的永久链接（兼容无 `time` 标签的详情页和新版分享按钮）；仅引用帖含视频、链接归属不明、全屏播放器独立菜单暂不支持。确认视频归属后会用本功能替换分享菜单中的官方“下载视频”入口，仅保留一个可见下载项；无法确认时保留官方入口。进度提示中的“取消”会中止当前任务；链接过期可再次点击菜单中的“下载视频”重新解析。
-- 在 X 原生分享菜单中增加“生成分享图”，将作者、正文、发布时间和最多 4 张配图排版成独立卡片。
-- 打开回复帖的详情页后生成分享图，会附上对话中直接被回复的帖子（作者、正文及配图），多层回复取相邻的上一层。原帖须已加载，且保留页面中的对话连接线；缺失或折叠时不会越过间隔误取其他帖子。
-- 单图完整展示；多图使用 X 风格网格；视频保留页面可见封面和播放标；引用推文与能由页面 status URL 确认的回复上下文使用嵌套卡片。
-- 超长分享卡片会在保留完整内容的前提下缩放到安全像素预算；关闭或重新生成时会取消旧的图片任务。
-- 正文中的 @提及、#话题和完整链接使用 X 品牌蓝突出显示；海报底部包含原文链接和本地生成的二维码。
-- 在弹窗中预览并复制 PNG；浏览器拒绝图片剪贴板权限时可下载 PNG。
-- 可手动本地隐藏账号内容，5 秒内撤销，也可从脚本面板恢复；“启用过滤”关闭时临时显示全部内容，规则保留，分享图与下载仍可用。
-- 可在脚本面板逐行配置屏蔽关键词；匹配忽略大小写和连续空白，只检查推文正文，保存后立即应用。
-- 在推文正文中划词后显示小号“屏蔽”按钮；点击后短语加入关键词列表，当前页面所有命中推文立即隐藏。
-- hover 推文作者头像时，只在头像右上角显示一个屏蔽图标；点击后立即隐藏该用户的当前可见内容。
-- 关键词和手动屏蔽账号可选多端同步；远端列表公开可读，写入需要同步密钥，离线增删和并发修改会合并。
-- 设置面板打开时，点击面板外空白区域会关闭面板，不会触发下方 X 页面。
-- 面板分为“关键词 / 屏蔽账号 / 设置”，支持未保存草稿保护、账号搜索、分页、手动添加和恢复；个人规则同步密钥默认折叠。
-- MXGA 浮窗可拖动，松手后吸附到最近的左右边缘；位置在本机保存，窗口缩放时保持可见，可在设置中重置。支持键盘页签切换、Esc 关闭和焦点恢复。
-- 页面变化只增量处理受影响的推文或用户单元，并保留低频全页恢复扫描；重复注入不会启动第二套运行时。
-
-关键词屏蔽可以通过两种方式使用：在推文正文中划词后点击浮动工具条，或打开 `MXGA` 面板，在“关键词屏蔽”中每行填写一个词或完整短语并点击“保存并应用”。留空并保存即可关闭关键词屏蔽。建议优先填写机器人反复使用的完整短语；过短或常见的单词容易误伤正常内容。
-
-当前没有内置第三方关键词表。现有公开列表大多是个人话题偏好或通用 AI 文风特征，不是经过验证的 X 机器人回复名单，直接合并会产生较高误伤；未启用多端同步时，你的配置只保存在 userscript 本地存储中。
-
-多端同步使用方式：在已配置的 Mac 上运行 `security find-generic-password -a kyangc -s mxga-sync -w` 读取写入密钥，然后打开 MXGA 面板，将密钥粘贴到“设置 → 个人规则同步”并点击“保存并同步”。其他设备重复粘贴同一个密钥即可。同步内容可从 [公开快照](https://mxga-sync.1109.workers.dev/v1/snapshot)读取；密钥不是加密口令，只用于阻止无关用户改写。其他用户可继续使用纯本地模式，或按 [`services/mxga-sync`](services/mxga-sync) 的说明部署自己的实例。
-
-cobalt 配置同步：先在各设备连接个人规则同步，再在同一区域的“cobalt 配置加密同步”填写**相同的独立加密口令**（至少 12 个字符，建议密码管理器生成），点击“启用配置同步”。地址和 API Key 会一起用 AES-256-GCM 加密；口令不上传，忘记后无法解密云端配置。首次启用优先读取已有云端配置；没有云端配置时上传本机已有配置。以后保存、修改或清空视频下载设置都会同步。暂停配置同步只停止本机同步，不删除云端密文。
-
-安全边界：
-
-- 本地过滤不上传页面内容、当前 X 身份或命中结果；只有用户显式启用多端同步后，关键词和手动屏蔽账号才会上传到公开快照。视频下载仅按下述规则将帖子链接交给 cobalt 网页或配置的服务。
-- 不调用 X 私有接口，不执行 X 原生静音或拉黑。
-- 点击“下载视频”后，未配置时通过 URL 片段将帖子链接交给 cobalt 网页，验证与保存由网站处理；已配置时向自建 API 发送链接，不发送 X cookie。自建服务失败或配置读取失败时不会自动切换到公共网站。为支持自定义实例，metadata 增加 `@connect *`；脚本管理器可能要求确认目标域名的访问权限。API Key 明文只发往配置的 API；启用配置同步时仅将密文交给同步服务，下载链接不附加该密钥。服务需支持 HTTPS 和 cobalt 当前 JSON API；页面兜底只暂存至多 100 条推文的媒体地址，10 分钟过期，不持久化、不读取或上传 X Cookie，不自行调用 X 内部接口；首次升级后需刷新 X 页面以启动采集。仅在用户点击下载且 cobalt 解析失败后使用缓存；取消不会触发兜底。
-- 分享图只读取页面已展示的推文内容；图片通过 `pbs.twimg.com` 在本地加载并在 Canvas 中生成，不上传推文数据。
-- 只作用于桌面浏览器里的 `x.com`、`twitter.com`，不能影响原生 X App。
-- 请勿与原版 MXGA 浏览器扩展同时启用，以免出现重复徽标和两套隐藏记录。
-
-分享图当前优先支持普通文字、图片、视频、引用推文和对话页回复；投票和更深层 Thread 只按页面可可靠读取到的内容降级处理。二维码编码使用 MIT 许可的 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)，2.0.4 版本随脚本打包，避免远程依赖延迟首屏视频采集。
-
-独立的 `X Tweet Share Card` 脚本已经停止发布。此前安装过它的用户需要在 Tampermonkey / Userscripts 中手动停用或删除；仓库更新无法远程卸载浏览器里已有的脚本副本。
-
-PC 安装：
-
-1. 安装 Tampermonkey。
-2. Chrome 138 及以上版本打开 Tampermonkey 的扩展详情页，启用“允许运行用户脚本”；也可按 [Tampermonkey 官方说明](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)启用浏览器开发者模式。
-3. 打开上面的 raw 安装链接并确认安装。
-4. 访问 `https://x.com/`，右侧边缘出现 `MXGA` 控制按钮。
-
-验收范围：桌面浏览器的过滤、个人规则同步、浮窗拖拽和分享/下载链路。构建测试与合成页面烟测不替代真实 X / Tampermonkey 验收，见 [MXGA 浏览器运行时与发布验收](docs/mxga-browser-acceptance.md)。
-
-### M-Team 种子列表增强
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/m-team-torrent-enhancer.user.js)
-
-功能：
-
-- 新热种高亮：根据发布时间、做种数、下载数、评论数给种子行染色提示。
-- 已访问种子置灰：点击进详情页后，在列表里轻度置灰，方便区分已经看过的种子。
-
-适用页面：
-
-- `https://kp.m-team.cc/*`
-
-### Telegram WebK 媒体下载器
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/telegram-webk-media-downloader.user.js)
-
-把 Telegram WebK 当前聊天中的图片、视频和文档下载到用户选择的本地目录：
-
-- 支持悬停后逐条下载，也可扫描当前聊天并批量加入下载队列。
-- 可按媒体类型和日期筛选；筛选条件在任务入队时固定，切换聊天时会终止不安全的批量扫描。
-- 按聊天和资源类型整理文件，并写入 manifest 与本次下载报告。
-- 根据规划文件名和文件大小跳过已存在文件。
-- 下载结束时会明确区分全部成功、包含失败项和任务失败。
-- 目录句柄只保存在浏览器本地，调试报告不包含聊天正文，并会遮蔽标题、名称和聊天 ID。
-
-适用页面：
-
-- `https://web.telegram.org/k/*`
-- `https://webk.telegram.org/*`
-
-脚本依赖 File System Access API 和 Telegram WebK 的内部下载对象。首次从旧独立仓库版本迁移时，请通过上面的新链接重新安装一次；后续版本会从本仓库自动检查更新。完整用法、输出目录和调试说明见 [Telegram WebK 媒体下载器文档](docs/telegram-webk-media-downloader.md)。
-
-### SimpCity 广告清理
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/simpcity-ad-cleaner.user.js)
-
-功能：
-
-- 拦截 SimpCity 上已知广告域名触发的点击弹窗和跳转。
-- 隐藏首页和动态插入的广告 banner / 推广块。
-
-适用页面：
-
-- `https://simpcity.cr/*`
-- `https://www.simpcity.cr/*`
-- `https://turbo.cr/embed/*`
-- `https://www.turbo.cr/embed/*`
-
-### Manga18fx 广告清理
-
-[点击安装 / 更新脚本](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/manga18fx-ad-cleaner.user.js)
-
-功能：
-
-- 隐藏 Manga18fx 首页、详情页和章节页里的 `kadx` banner 广告位。
-- 清理外部广告脚本插入的漂浮视频广告、点击遮罩和追踪 iframe。
-- 关闭反广告拦截提示弹窗，但保留年龄确认弹窗。
-
-适用页面：
-
-- `https://manga18fx.com/*`
-- `https://www.manga18fx.com/*`
-
-安装方式：
-
-1. 浏览器安装 Tampermonkey 扩展。
-2. 打开上面的安装链接。
-3. 在 Tampermonkey 弹出的页面里确认安装。
-
-后续更新：
-
-- 从上面的 raw 链接安装后，Tampermonkey 会根据脚本里的 `@updateURL` 检查更新。
-- 每次修改脚本后需要提升 `@version`，浏览器端才会识别为新版本。
-
-## 仓库结构
-
-- `scripts/`：Tampermonkey `.user.js` 脚本。
-- `src/userscripts/`：共享 userscript 入口和运行时模块源码。
-- `test/`：脚本中纯逻辑部分的 Node 测试。
-- `tools/`：userscript 生成与工程校验脚本。
-- `LICENSES/`：衍生脚本所需的开源许可证全文。
-- `docs/userscript-conventions.md`：油猴脚本发布和更新约定。
-- `AGENTS.md`：给新 AI thread / coding agent 的项目操作说明。
-
-## 本地开发
-
-需要 Node.js 24 或更高版本；CI 使用 Node.js 24。Worker 测试依赖该版本提供的 `node:sqlite`。
-
-完整检查：
-
-```bash
-npm run check
-```
-
-修改 `src/userscripts/` 后，先生成可发布脚本：
-
-```bash
-npm run build:userscripts
-```
-
-推送到 `main` 或创建 Pull Request 后，[GitHub Actions](https://github.com/kyangc/tampermonkey_scripts/actions/workflows/userscript-checks.yml) 会在只读权限下自动运行同一套检查；检查通过不等于真实站点运行时验收通过。
-
-校验油猴脚本发布元信息：
-
-```bash
-npm run validate:userscripts
-```
-
-运行测试：
-
-```bash
-npm test
-```
-
-检查脚本语法：
-
-```bash
-node --check scripts/m-team-torrent-enhancer.user.js
-```
-
-## 备注
-
-- 起新 AI thread 做脚本时，可以让它先读 `AGENTS.md` 和 `docs/userscript-conventions.md`。
-- 新增或更新脚本前，先看 [油猴脚本工程约定](docs/userscript-conventions.md)。
-- 脚本文件名统一使用 `kebab-case.user.js`。
-- 不要提交站点 token、cookie 或其他隐私数据。
+MXGA 衍生自 [foru17/make-x-great-again](https://github.com/foru17/make-x-great-again)，遵循 [AGPL-3.0-or-later](LICENSES/AGPL-3.0.txt)；内置二维码组件遵循 [MIT 许可](LICENSES/qrcode-generator-MIT.txt)。

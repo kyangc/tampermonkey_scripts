@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const core = require('../scripts/simpcity-ad-cleaner.user.js');
+const core = require('../scripts/website-cleanup.user.js').simpcity;
 
 test('blocks known SimpCity ad redirect hosts while allowing forum URLs', () => {
   assert.equal(core.isBlockedAdUrl('https://tt.culinar9sync.com/click?zone=top'), true);

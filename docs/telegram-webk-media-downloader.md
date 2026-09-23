@@ -2,14 +2,12 @@
 
 这是一个 Tampermonkey userscript，用于把 Telegram WebK 聊天中的图片、视频和文档下载到用户选择的本地目录。
 
-## 安装与迁移
+## 安装
 
 1. 在桌面浏览器中安装 Tampermonkey。
 2. 打开 [raw 安装链接](https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/telegram-webk-media-downloader.user.js)。
 3. 确认安装后，访问 Telegram WebK。
 4. 展开右下角的 `WebK Media` 面板并选择下载目录。
-
-从旧独立仓库安装的 `0.1.0` 版本没有统一仓库的更新地址。旧版用户需要通过上面的链接重新安装一次；从 `0.2.0` 开始，Tampermonkey 会使用脚本中的 `@updateURL` 从本仓库检查更新。
 
 支持的页面：
 

@@ -1,19 +1,3 @@
-// ==UserScript==
-// @name         Manga18fx Ad Cleaner
-// @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.1.0
-// @description  Hide Manga18fx banner ad slots, floating ads, and anti-adblock prompts.
-// @author       kyangc
-// @homepageURL  https://github.com/kyangc/tampermonkey_scripts
-// @supportURL   https://github.com/kyangc/tampermonkey_scripts/issues
-// @updateURL    https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/manga18fx-ad-cleaner.user.js
-// @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/manga18fx-ad-cleaner.user.js
-// @match        https://manga18fx.com/*
-// @match        https://www.manga18fx.com/*
-// @run-at       document-start
-// @grant        none
-// ==/UserScript==
-
 (function manga18fxAdCleaner(global) {
   'use strict';
 
@@ -288,10 +272,11 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = core;
+    module.exports.manga18fx = core;
   }
 
   if (!global || !global.document) return;
+  if (!(global.location?.protocol === 'https:' && ['manga18fx.com', 'www.manga18fx.com'].includes(global.location.hostname))) return;
 
   const pageWindow = global;
   const document = pageWindow.document;
@@ -480,4 +465,4 @@
   } else {
     initDomCleaning();
   }
-})(typeof window !== 'undefined' ? window : globalThis);
+})(typeof unsafeWindow !== 'undefined' ? unsafeWindow : typeof window !== 'undefined' ? window : globalThis);

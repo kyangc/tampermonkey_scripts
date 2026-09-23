@@ -344,6 +344,7 @@ test('metadata targets desktop Tampermonkey without public list permissions', ()
     'GM.deleteValue',
     'GM.xmlHttpRequest',
     'GM.openInTab',
+    'GM.download',
   ]));
   assert.deepEqual(metadataValues('updateURL'), [
     'https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js',

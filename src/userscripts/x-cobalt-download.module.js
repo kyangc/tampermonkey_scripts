@@ -41,7 +41,7 @@ function createMxgaCobalt(global) {
       let url;
       try { url = new URL(item.url); } catch (_) { throw new Error('服务返回了无效下载地址'); }
       if (url.protocol !== 'https:' || url.username || url.password) throw new Error('服务返回了不安全的下载地址');
-      return { url: url.href, label: `下载视频${rows.length > 1 ? ` ${index + 1}` : ''}`,
+      return { url: url.href, type: item.type === 'gif' ? 'gif' : 'video', label: `下载视频${rows.length > 1 ? ` ${index + 1}` : ''}`,
         filename: typeof item.filename === 'string' ? item.filename.slice(0, 240) : '' };
     });
   }
@@ -113,19 +113,108 @@ function createMxgaCobalt(global) {
     openCobaltDownload(tweetUrl, { webFallback: url });
   }
 
+  function cobaltFileName(item, tweetUrl, index) {
+    const fallback = `x-${new URL(tweetUrl).pathname.split('/').pop()}-${index + 1}.${item.type === 'gif' ? 'gif' : 'mp4'}`;
+    const name = String(item.filename || '').replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_').replace(/^\.+/, '').trim().slice(0, 180);
+    return /\.(mp4|webm|mov|m4v|gif)$/i.test(name) ? name : fallback;
+  }
+
+  function downloadCobaltFile(gm, item, tweetUrl, index, signal) {
+    return new Promise((resolve, reject) => {
+      let transfer;
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        error ? reject(error) : resolve();
+      };
+      const abort = () => { finish(new Error('已取消下载')); transfer?.abort?.(); };
+      if (signal?.aborted) { abort(); return; }
+      if (typeof gm?.download !== 'function') { finish(new Error('自动下载不可用，请更新脚本并允许 Tampermonkey 下载权限')); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      const failed = (error) => {
+        const permission = ['not_enabled', 'not_whitelisted', 'not_permitted', 'not_supported'].includes(error?.error);
+        finish(new Error(permission ? '自动下载被脚本管理器拦截，请检查下载权限或使用下方链接' : '下载失败，可重试或使用下方链接'));
+      };
+      try {
+        transfer = gm.download({ url: item.url, name: cobaltFileName(item, tweetUrl, index),
+          saveAs: false, conflictAction: 'uniquify', anonymous: true,
+          onload: () => finish(), onerror: failed, ontimeout: () => failed(null) });
+        transfer?.then?.(() => finish(), failed);
+      } catch (error) { failed(error); }
+    });
+  }
+
+  function createDownloadNotice(onCancel) {
+    const document = global.document;
+    document.querySelector('[data-mxga-download-task]')?.dispatchEvent(new global.Event('mxga-download-dismiss'));
+    const host = document.createElement('div');
+    host.setAttribute('data-mxga-download-task', '');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>
+      :host{all:initial}.notice{position:fixed;right:20px;bottom:20px;z-index:2147483646;max-width:min(380px,calc(100vw - 40px));padding:14px 16px;border:1px solid #cdd5dd;border-radius:12px;background:#fff;color:#18212b;box-shadow:0 6px 24px #0002;font:13px/1.5 system-ui,sans-serif}
+      .row{display:flex;gap:14px;align-items:center}button,a{font:inherit;color:#1769aa;cursor:pointer}button{border:0;background:none;padding:4px}a{display:block;margin-top:8px}:focus-visible{outline:2px solid #1769aa;outline-offset:2px}.actions:empty{display:none}
+      @media(prefers-color-scheme:dark){.notice{background:#192027;color:#e8edf2;border-color:#35414d}button,a{color:#8cc8f4}}
+    </style><div class="notice"><div class="row"><span role="status" aria-live="polite">正在解析视频…</span><button type="button" aria-label="取消下载">取消</button></div><div class="actions"></div></div>`;
+    document.body.appendChild(host);
+    const status = root.querySelector('[role=status]');
+    const closeButton = root.querySelector('button');
+    const actions = root.querySelector('.actions');
+    let closed = false;
+    let timer;
+    const close = () => { if (closed) return; closed = true; global.clearTimeout(timer); onCancel(); host.remove(); };
+    host.addEventListener('mxga-download-dismiss', close, { once: true });
+    closeButton.onclick = close;
+    return {
+      close,
+      setStatus(message) { if (!closed) status.textContent = message; },
+      finish(message) {
+        if (closed) return;
+        status.textContent = message; closeButton.textContent = '关闭'; closeButton.setAttribute('aria-label', '关闭下载提示');
+        timer = global.setTimeout(close, 5000);
+      },
+      fail(message, items, retry) {
+        if (closed) return;
+        status.textContent = message; closeButton.textContent = '关闭'; closeButton.setAttribute('aria-label', '关闭下载提示');
+        const button = document.createElement('button'); button.textContent = '重试';
+        button.onclick = () => { close(); void retry(); }; actions.append(button);
+        for (const item of items) {
+          const link = document.createElement('a'); link.href = item.url; link.textContent = item.label;
+          link.target = '_blank'; link.rel = 'noopener noreferrer'; link.referrerPolicy = 'no-referrer'; actions.append(link);
+        }
+      },
+    };
+  }
+
   let routing = false;
-  async function startCobaltDownload(tweetUrl) {
+  async function startCobaltDownload(tweetUrl, pendingItems = null, firstIndex = 0) {
     if (routing) return;
     routing = true;
+    let notice;
+    const controller = new global.AbortController();
+    let items = pendingItems;
+    let completed = firstIndex;
     try {
       const gm = typeof GM !== 'undefined' ? GM : global.GM;
       // A failed read is not evidence that the user selected public processing.
       const config = gm?.getValue ? await gm.getValue(STORAGE_KEY, {}) : {};
       const route = cobaltDownloadRoute(config, tweetUrl);
-      if (route.mode === 'web') await openCobaltWebsite(tweetUrl);
-      else openCobaltDownload(tweetUrl, { autoParse: route.mode === 'api' });
-    } catch (_) {
-      openCobaltDownload(tweetUrl);
+      if (route.mode === 'web') { await openCobaltWebsite(tweetUrl); return; }
+      if (route.mode === 'settings') { openCobaltDownload(tweetUrl); return; }
+      notice = createDownloadNotice(() => controller.abort());
+      if (!items) items = await requestCobalt(gm, route.url, config.apiKey || '', tweetUrl, controller.signal);
+      for (; completed < items.length; completed++) {
+        if (controller.signal.aborted) return;
+        notice.setStatus(`正在下载视频 ${completed + 1}/${items.length}…`);
+        await downloadCobaltFile(gm, items[completed], tweetUrl, completed, controller.signal);
+      }
+      notice.finish(items.length > 1 ? `${items.length} 个视频下载完成` : '视频下载完成');
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (!notice) { openCobaltDownload(tweetUrl); return; }
+      notice.fail(error.message || '下载失败，请重试', items ? items.slice(completed) : [],
+        () => startCobaltDownload(tweetUrl, items, completed));
     } finally { routing = false; }
   }
 
@@ -168,11 +257,9 @@ function createMxgaCobalt(global) {
     const status = shadow.querySelector('.status');
     const results = shadow.querySelector('.results');
     let closed = false;
-    let controller;
     const close = () => {
       if (closed) return;
       closed = true;
-      controller?.abort();
       host.remove();
       if (closeCurrent === close) closeCurrent = null;
       if (previousFocus?.isConnected) previousFocus.focus();
@@ -202,7 +289,6 @@ function createMxgaCobalt(global) {
       button.disabled = true;
       endpoint.disabled = key.disabled = true;
       results.replaceChildren();
-      controller = new global.AbortController();
       status.textContent = settingsOnly ? '正在保存…' : '正在解析视频…';
       try {
         const apiKey = url ? key.value.trim() : '';
@@ -215,18 +301,8 @@ function createMxgaCobalt(global) {
           return;
         }
         if (!url) { close(); await openCobaltWebsite(tweetUrl); return; }
-        const items = await requestCobalt(gm, url, apiKey, tweetUrl, controller.signal);
-        if (closed) return;
-        for (const item of items) {
-          const link = document.createElement('a');
-          link.href = item.url;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          link.referrerPolicy = 'no-referrer';
-          link.textContent = item.label;
-          results.append(link);
-        }
-        status.textContent = '解析完成。点击下载，交由浏览器保存；链接失效时请重新解析。';
+        close();
+        void startCobaltDownload(tweetUrl);
       } catch (error) {
         if (!closed) status.textContent = error.message || '解析失败，请重试';
       } finally {
@@ -245,7 +321,6 @@ function createMxgaCobalt(global) {
           : normalizeCobaltUrl(endpoint.value) ? '已配置自建服务。' : '已保存的 API 地址无效，请修正或清空后保存。';
         button.disabled = false;
         endpoint.focus();
-        if (options.autoParse && endpoint.value) form.requestSubmit();
       } catch (_) { if (!closed) status.textContent = '无法读取本地配置，请检查脚本管理器存储权限'; }
     })();
     if (options.webFallback) {
@@ -257,6 +332,6 @@ function createMxgaCobalt(global) {
       results.append(link);
     }
   }
-  return { normalizeCobaltUrl, cobaltRequestBody, parseCobaltResponse, requestCobalt, cobaltDownloadRoute, startCobaltDownload, openCobaltDownload };
+  return { normalizeCobaltUrl, cobaltRequestBody, parseCobaltResponse, requestCobalt, cobaltFileName, downloadCobaltFile, cobaltDownloadRoute, startCobaltDownload, openCobaltDownload };
 }
 if (typeof module !== 'undefined' && module.exports) Object.assign(module.exports, createMxgaCobalt(globalThis));

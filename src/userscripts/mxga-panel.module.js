@@ -91,10 +91,10 @@ function createMxgaUi(global, callbacks, initialPosition) {
             <div class="sync-status" data-role="cobalt-sync-status"></div>
             <div class="actions"><button class="button" data-action="enable-cobalt-sync">启用配置同步</button><button class="button" data-action="disable-cobalt-sync" hidden>暂停配置同步</button></div>
           </details>
-          <div class="settings-row"><h3>视频下载</h3><p class="help">默认打开 cobalt 网页，也可连接自建 API 自动解析。</p><button class="button" data-action="configure-cobalt">视频下载设置</button></div>
+          <div class="settings-row"><h3>视频下载</h3><p class="help">默认打开 cobalt 网页，也可连接自建 API 自动解析并下载。</p><button class="button" data-action="configure-cobalt">视频下载设置</button></div>
           <div class="settings-row"><h3>浮窗位置</h3><p class="help">拖动 MXGA 按钮，松手后吸附到左右边缘。</p><button class="button" data-action="reset-position">重置位置</button></div>
           <p class="privacy">启用过滤只影响页面隐藏；分享图和下载始终可用。同步不包含浏览页面或命中结果；cobalt 凭据仅在启用配置同步后以密文上传。</p>
-          <div class="links"><span>MXGA 0.7.1</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
+          <div class="links"><span>MXGA 0.7.2</span><button class="link-button" data-action="open-source">源码 ↗</button><button class="link-button" data-action="open-upstream">原始项目 ↗</button></div>
         </section>
       </div>
     </section>

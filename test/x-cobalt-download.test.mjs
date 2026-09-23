@@ -181,3 +181,29 @@ test('logged-in unplayed video preview is downloadable before a player is mounte
   previews = [preview(article, false)];
   assert.equal(core.extractVideoTweetUrl(article), '');
 });
+
+test('automatic download uses safe filenames and never forwards the API credential', async () => {
+  let options;
+  const pending = core.downloadCobaltFile({download(o) { options=o; return {}; }},
+    {url:'https://media.example/clip',filename:'../../clip.mp4'},tweet,0);
+  assert.equal(options.url,'https://media.example/clip');
+  assert.equal(options.name.includes('/'),false);
+  assert.equal(options.saveAs,false);
+  assert.equal(options.conflictAction,'uniquify');
+  assert.equal(options.anonymous,true);
+  assert.equal(options.headers,undefined);
+  options.onload(); await pending;
+  assert.equal(core.cobaltFileName({filename:'unsafe.exe'},tweet,1),'x-123-2.mp4');
+});
+
+test('automatic download supports promise completion, permission failure and cancellation', async () => {
+  const item={url:'https://media.example/clip'};
+  await core.downloadCobaltFile({download:()=>Promise.resolve({})},item,tweet,0);
+  await assert.rejects(core.downloadCobaltFile({},item,tweet,0),/权限/);
+  await assert.rejects(core.downloadCobaltFile({download:()=>Promise.reject({error:'not_permitted'})},item,tweet,0),/拦截/);
+  let aborted=false, options;
+  const controller=new AbortController();
+  const pending=core.downloadCobaltFile({download(o){options=o;return {abort(){aborted=true}}}},item,tweet,0,controller.signal);
+  controller.abort();await assert.rejects(pending,/取消/);assert.equal(aborted,true);
+  options.onload(); // A late completion cannot turn cancellation into success.
+});

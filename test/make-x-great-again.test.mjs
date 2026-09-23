@@ -842,6 +842,7 @@ test('metadata exposes the cross-platform interface required by Tampermonkey and
     'x.zuoluo.tv',
     'mxga-sync.1109.workers.dev',
     'pbs.twimg.com',
+    '*', // User-configured cobalt instance; no private endpoint in the public bundle.
   ]);
   assert.match(
     metadataValues('require')[0],

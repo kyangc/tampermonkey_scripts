@@ -158,6 +158,24 @@
     return null;
   }
 
+  // Downloads use only a permalink within the owning tweet, never page location.
+  function extractVideoTweetUrl(article) {
+    if (!article) return '';
+    const quote = findQuotedTweetRoot(article);
+    const excluded = quote ? [quote] : [];
+    if (!queryScopedNode(article, '[data-testid="videoPlayer"], video', excluded)) return '';
+    const time = queryScopedNode(article, 'time[datetime]', excluded);
+    const anchor = time?.closest?.('a[href*="/status/"]');
+    const href = anchor?.getAttribute?.('href');
+    if (!href) return '';
+    try {
+      const url = new URL(href, 'https://x.com');
+      if (!['x.com', 'twitter.com'].includes(url.hostname) || url.protocol !== 'https:'
+        || url.username || url.password || !/^\/[A-Za-z0-9_]{1,15}\/status\/\d+(?:\/)?$/.test(url.pathname)) return '';
+      return normalizeStatusUrl(url.href);
+    } catch (_) { return ''; }
+  }
+
   function getStatusId(value) {
     return String(value || '').match(/\/status\/(\d+)/)?.[1] || '';
   }
@@ -776,11 +794,12 @@
 
   function getShareMenuStyleText() {
     return `
-      [data-tsc-action="share-card"] {
+      [data-tsc-action="share-card"], [data-tsc-action="cobalt-download"] {
         transition: background-color 0.15s ease;
       }
       [data-tsc-action="share-card"]:hover,
-      [data-tsc-action="share-card"]:focus-visible {
+      [data-tsc-action="share-card"]:focus-visible,
+      [data-tsc-action="cobalt-download"]:hover, [data-tsc-action="cobalt-download"]:focus-visible {
         background-color: rgba(127,127,127,0.14) !important;
         background-color: color-mix(in srgb,currentColor 12%,transparent) !important;
       }
@@ -884,6 +903,7 @@
     createQrMatrix,
     drawTweetTextRuns,
     extractTweetData,
+    extractVideoTweetUrl,
     extractVideoPosterUrl,
     findShareMenuAnchor,
     getCanvasRenderSize,
@@ -912,6 +932,7 @@
 
   if (!global || !global.document) return;
 
+  const cobalt = createMxgaCobalt(global);
   const document = global.document;
   const runtimeRoot = document.documentElement;
   if (
@@ -1937,13 +1958,14 @@
     action.append(fallback);
   }
 
-  function createShareMenuAction(reference, article) {
+  function createShareMenuAction(reference, article, kind = 'share-card') {
+    const label = kind === 'cobalt-download' ? '下载视频' : '生成分享图';
     const action = reference.cloneNode(true);
     action.__tscArticle = article;
-    action.setAttribute('data-tsc-action', 'share-card');
+    action.setAttribute('data-tsc-action', kind);
     action.setAttribute('role', 'menuitem');
     action.setAttribute('tabindex', '0');
-    action.setAttribute('aria-label', '生成分享图');
+    action.setAttribute('aria-label', label);
     action.removeAttribute('data-testid');
     action.removeAttribute('href');
     action.removeAttribute('aria-disabled');
@@ -1951,7 +1973,7 @@
       child.removeAttribute('data-testid');
       child.removeAttribute('href');
     }
-    replaceMenuItemLabel(action, '生成分享图');
+    replaceMenuItemLabel(action, label);
 
     const icon = action.querySelector('svg');
     if (icon) {
@@ -1959,11 +1981,15 @@
       icon.innerHTML = '<path d="M5 3.75h14A2.25 2.25 0 0 1 21.25 6v12A2.25 2.25 0 0 1 19 20.25H5A2.25 2.25 0 0 1 2.75 18V6A2.25 2.25 0 0 1 5 3.75Zm0 1.5a.75.75 0 0 0-.75.75v8.13l2.69-2.69a1.5 1.5 0 0 1 2.12 0l2.19 2.19 3.69-3.69a1.5 1.5 0 0 1 2.12 0l2.69 2.69V6a.75.75 0 0 0-.75-.75H5Zm14.75 9-3.75-3.75-4.22 4.22a.75.75 0 0 1-1.06 0L8 12l-3.75 3.75V18c0 .414.336.75.75.75h14a.75.75 0 0 0 .75-.75v-3.75ZM8.25 7a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Z" fill="currentColor"/>';
     }
 
+    if (icon && kind === 'cobalt-download') icon.innerHTML = '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
     action.style.cursor = 'pointer';
     action.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (action.__tscArticle) void openShareCard(action.__tscArticle);
+      if (kind === 'cobalt-download') {
+        const url = extractVideoTweetUrl(action.__tscArticle);
+        if (url) cobalt.openCobaltDownload(url);
+      } else if (action.__tscArticle) void openShareCard(action.__tscArticle);
     });
     action.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
@@ -1986,15 +2012,17 @@
     let mounted = false;
     for (const menu of menus) {
       if (!isTweetShareMenu(menu)) continue;
-      const existing = menu.querySelector('[data-tsc-action="share-card"]');
-      if (existing) {
-        existing.__tscArticle = state.activeArticle;
-        mounted = true;
-        continue;
-      }
       const reference = findShareMenuAnchor(menu);
       if (!reference || !reference.parentNode) continue;
-      reference.parentNode.insertBefore(createShareMenuAction(reference, state.activeArticle), reference);
+      for (const kind of ['share-card', 'cobalt-download']) {
+        const existing = menu.querySelector(`[data-tsc-action="${kind}"]`);
+        if (kind === 'cobalt-download' && !extractVideoTweetUrl(state.activeArticle)) {
+          existing?.remove();
+          continue;
+        }
+        if (existing) existing.__tscArticle = state.activeArticle;
+        else reference.parentNode.insertBefore(createShareMenuAction(reference, state.activeArticle, kind), reference);
+      }
       mounted = true;
     }
     if (mounted) state.activeArticle = null;

@@ -82,7 +82,7 @@ test('request errors cover timeouts, network failure, bad JSON, authentication a
 function articleFixture({ video = true, href = '/example/status/123', quoteVideo = false } = {}) {
   const player = {};
   const anchor = { getAttribute: () => href };
-  const time = { closest: () => anchor };
+  const time = { closest: selector => selector === 'a[href*="/status/"]' ? anchor : null };
   const quote = { contains: node => node === player };
   const name = { closest: () => quote };
   const nodes = selector => {
@@ -101,4 +101,46 @@ test('video menu requires the owning tweet video and timestamp permalink, not it
   assert.equal(core.extractVideoTweetUrl(articleFixture({ href: '' })), '');
   assert.equal(core.extractVideoTweetUrl(articleFixture({ href: 'https://evil.example/example/status/123' })), '');
   assert.equal(core.extractVideoTweetUrl(articleFixture({ href: '/example/status/123?s=20' })), tweet);
+});
+
+function modernArticle({ ownVideo = true, links = ['/example/status/123'], quoted = true } = {}) {
+  const article = {};
+  const quote = {};
+  const node = (owner, href) => ({
+    closest: selector => selector === 'article' ? owner : null,
+    getAttribute: name => name === 'href' ? href : null,
+  });
+  const ownLinks = links.map(href => node(article, href));
+  const videos = [...(ownVideo ? [node(article)] : []), ...(quoted ? [node(quote)] : [])];
+  const nodes = selector => selector === '[data-testid="videoPlayer"], video' ? videos
+    : selector === 'a[href*="/status/"]' ? [...ownLinks, ...(quoted ? [node(quote, '/quoted/status/456')] : [])] : [];
+  article.querySelectorAll = nodes;
+  article.querySelector = selector => nodes(selector)[0] || null;
+  return article;
+}
+
+test('detail page without time uses unique own permalink, excluding nested quote videos and links', () => {
+  assert.equal(core.extractVideoTweetUrl(modernArticle()), tweet);
+  assert.equal(core.extractVideoTweetUrl(modernArticle({ links: ['/example/status/123', '/example/status/123?s=20'] })), tweet);
+  assert.equal(core.extractVideoTweetUrl(modernArticle({ ownVideo: false })), '');
+  assert.equal(core.extractVideoTweetUrl(modernArticle({ links: [] })), '');
+  assert.equal(core.extractVideoTweetUrl(modernArticle({ links: ['/example/status/123', '/other/status/999'] })), '');
+});
+
+test('recognizes the current X engagement share button and Share label', () => {
+  const button = values => ({ getAttribute: name => values[name] || null });
+  assert.equal(core.isTweetShareButton(button({ 'data-engagement-action': 'share' })), true);
+  assert.equal(core.isTweetShareButton(button({ 'aria-label': 'Share' })), true);
+  assert.equal(core.isTweetShareButton(button({ 'aria-label': 'More' })), false);
+});
+
+test('identifies only native video download menu items, including a separate Premium badge', () => {
+  const item = (text, attrs = {}, children = []) => ({ textContent: text,
+    getAttribute: key => attrs[key], querySelectorAll: () => children.map(textContent => ({ textContent })) });
+  const native = item('下载视频');
+  const english = item('Download video Premium', {}, ['Download video', 'Premium']);
+  const byId = item('動画をダウンロード', { 'data-testid': 'downloadVideo' });
+  const ours = item('下载视频', { 'data-tsc-action': 'cobalt-download' });
+  const menu = { querySelectorAll: () => [native, english, byId, ours, item('复制链接'), item('Download image')] };
+  assert.deepEqual(core.findNativeVideoDownloadItems(menu), [native, english, byId]);
 });

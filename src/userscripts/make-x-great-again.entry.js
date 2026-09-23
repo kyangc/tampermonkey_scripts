@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.6.0
+// @version      0.6.1
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later

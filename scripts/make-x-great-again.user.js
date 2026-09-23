@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.6.0
+// @version      0.6.1
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -2792,22 +2792,46 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
     return null;
   }
 
-  // Downloads use only a permalink within the owning tweet, never page location.
+  function normalizeVideoTweetUrl(value) {
+    if (!value) return '';
+    try {
+      const url = new URL(value, 'https://x.com');
+      if (!['x.com', 'twitter.com'].includes(url.hostname) || url.protocol !== 'https:'
+        || url.username || url.password || !/^\/[A-Za-z0-9_]{1,15}\/status\/\d+\/?$/.test(url.pathname)) return '';
+      return normalizeStatusUrl(url.href);
+    } catch (_) { return ''; }
+  }
+
+  // Detail pages may have plain timestamp links instead of <time datetime>.
+  // Exclude nested quotes and require one unambiguous owning permalink.
   function extractVideoTweetUrl(article) {
     if (!article) return '';
     const quote = findQuotedTweetRoot(article);
     const excluded = quote ? [quote] : [];
-    if (!queryScopedNode(article, '[data-testid="videoPlayer"], video', excluded)) return '';
-    const time = queryScopedNode(article, 'time[datetime]', excluded);
-    const anchor = time?.closest?.('a[href*="/status/"]');
-    const href = anchor?.getAttribute?.('href');
-    if (!href) return '';
-    try {
-      const url = new URL(href, 'https://x.com');
-      if (!['x.com', 'twitter.com'].includes(url.hostname) || url.protocol !== 'https:'
-        || url.username || url.password || !/^\/[A-Za-z0-9_]{1,15}\/status\/\d+(?:\/)?$/.test(url.pathname)) return '';
-      return normalizeStatusUrl(url.href);
-    } catch (_) { return ''; }
+    const ownNodes = (selector) => queryScopedNodes(article, selector, excluded).filter((node) => {
+      const owner = node.closest?.('article');
+      if (owner && owner !== article) return false;
+      const embedded = node.closest?.('[role="link"][data-href*="/status/"]');
+      return !embedded || !article.contains?.(embedded);
+    });
+    if (!ownNodes('[data-testid="videoPlayer"], video').length) return '';
+    const time = ownNodes('time[datetime]')[0];
+    const timestampUrl = normalizeVideoTweetUrl(time?.closest?.('a[href*="/status/"]')?.getAttribute?.('href'));
+    if (timestampUrl) return timestampUrl;
+    const urls = new Set(ownNodes('a[href*="/status/"]').filter((node) => !node.closest?.('[data-testid="tweetText"]'))
+      .map((node) => normalizeVideoTweetUrl(node.getAttribute?.('href'))).filter(Boolean));
+    return urls.size === 1 ? [...urls][0] : '';
+  }
+
+  function findNativeVideoDownloadItems(menu) {
+    const labelPattern = /^(?:下载视频|下載影片|下載視頻|download video)$/i;
+    return Array.from(menu?.querySelectorAll?.('[role="menuitem"]') || []).filter((item) => {
+      if (item.getAttribute?.('data-tsc-action')) return false;
+      const testId = item.getAttribute?.('data-testid') || '';
+      if (/^downloadVideo$/i.test(testId)) return true;
+      const labels = [item, ...Array.from(item.querySelectorAll?.('span, div') || [])];
+      return labels.some((node) => labelPattern.test(String(node.textContent || '').replace(/\s+/g, ' ').trim()));
+    });
   }
 
   function getStatusId(value) {
@@ -3413,9 +3437,10 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
 
   function isTweetShareButton(element) {
     if (!element || typeof element.getAttribute !== 'function') return false;
-    if (element.getAttribute('data-testid') === 'share') return true;
+    if (element.getAttribute('data-testid') === 'share'
+      || element.getAttribute('data-engagement-action') === 'share') return true;
     const label = String(element.getAttribute('aria-label') || '').trim();
-    return /^(?:share post|分享帖子|分享貼文|ポストを共有|게시물 공유하기|partager le post|compartir post|post teilen|condividi post|compartilhar post)$/i.test(label);
+    return /^(?:share|share post|分享|分享帖子|分享貼文|ポストを共有|게시물 공유하기|partager le post|compartir post|post teilen|condividi post|compartilhar post)$/i.test(label);
   }
 
   function getMediaRenderConfig(count) {
@@ -3428,6 +3453,7 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
 
   function getShareMenuStyleText() {
     return `
+      [data-mxga-native-video-download] { display: none !important; }
       [data-tsc-action="share-card"], [data-tsc-action="cobalt-download"] {
         transition: background-color 0.15s ease;
       }
@@ -3538,6 +3564,7 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
     drawTweetTextRuns,
     extractTweetData,
     extractVideoTweetUrl,
+    findNativeVideoDownloadItems,
     extractVideoPosterUrl,
     findShareMenuAnchor,
     getCanvasRenderSize,
@@ -4603,6 +4630,11 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
     action.removeAttribute('data-testid');
     action.removeAttribute('href');
     action.removeAttribute('aria-disabled');
+    for (const node of [action, ...action.querySelectorAll('[id], [aria-labelledby], [aria-controls]')]) {
+      node.removeAttribute('id');
+      node.removeAttribute('aria-labelledby');
+      node.removeAttribute('aria-controls');
+    }
     for (const child of action.querySelectorAll('[data-testid], [href]')) {
       child.removeAttribute('data-testid');
       child.removeAttribute('href');
@@ -4636,8 +4668,6 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
 
   function mountShareMenuActions() {
     state.mountScheduled = false;
-    if (!state.activeArticle) return;
-
     const roleMenus = Array.from(document.querySelectorAll('[role="menu"]'));
     const menus = roleMenus.length
       ? roleMenus
@@ -4648,14 +4678,29 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
       if (!isTweetShareMenu(menu)) continue;
       const reference = findShareMenuAnchor(menu);
       if (!reference || !reference.parentNode) continue;
+      const article = state.activeArticle || menu.querySelector('[data-tsc-action]')?.__tscArticle;
+      if (!article?.isConnected) continue;
+      const videoUrl = extractVideoTweetUrl(article);
+      const nativeDownloads = findNativeVideoDownloadItems(menu);
+      for (const native of nativeDownloads) {
+        if (videoUrl) native.setAttribute('data-mxga-native-video-download', '');
+        else native.removeAttribute('data-mxga-native-video-download');
+      }
       for (const kind of ['share-card', 'cobalt-download']) {
         const existing = menu.querySelector(`[data-tsc-action="${kind}"]`);
-        if (kind === 'cobalt-download' && !extractVideoTweetUrl(state.activeArticle)) {
+        // The share-card extractor still requires the classic X content fields.
+        if ((kind === 'cobalt-download' && !videoUrl)
+          || (kind === 'share-card' && !article.matches('[data-testid="tweet"]'))) {
           existing?.remove();
           continue;
         }
-        if (existing) existing.__tscArticle = state.activeArticle;
-        else reference.parentNode.insertBefore(createShareMenuAction(reference, state.activeArticle, kind), reference);
+        const anchor = kind === 'cobalt-download' ? nativeDownloads[0] || reference : reference;
+        if (existing) {
+          existing.__tscArticle = article;
+          if (kind === 'cobalt-download' && nativeDownloads.length && existing.nextSibling !== anchor) {
+            anchor.parentNode.insertBefore(existing, anchor);
+          }
+        } else anchor.parentNode.insertBefore(createShareMenuAction(reference, article, kind), anchor);
       }
       mounted = true;
     }
@@ -4663,7 +4708,8 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
   }
 
   function scheduleShareMenuMount() {
-    if (!state.activeArticle || state.mountScheduled) return;
+    if (state.mountScheduled) return;
+    if (!state.activeArticle && !document.querySelector('[role="menu"] [data-tsc-action], [data-testid="Dropdown"] [data-tsc-action]')) return;
     state.mountScheduled = true;
     global.requestAnimationFrame(mountShareMenuActions);
   }
@@ -4672,8 +4718,9 @@ if (typeof module !== 'undefined' && module.exports) Object.assign(module.export
     const target = event.target instanceof global.Element ? event.target : null;
     const candidateButton = target?.closest?.('button, [role="button"]');
     const shareButton = isTweetShareButton(candidateButton) ? candidateButton : null;
-    const article = shareButton?.closest?.('article[data-testid="tweet"]');
-    if (!article) return;
+    if (!shareButton) return;
+    const article = shareButton.closest?.('article');
+    if (!article) { state.activeArticle = null; return; }
     state.activeArticle = article;
     scheduleShareMenuMount();
     global.setTimeout(scheduleShareMenuMount, 80);

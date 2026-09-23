@@ -2020,7 +2020,7 @@
       event.stopPropagation();
       if (kind === 'cobalt-download') {
         const url = extractVideoTweetUrl(action.__tscArticle);
-        if (url) cobalt.openCobaltDownload(url);
+        if (url) void cobalt.startCobaltDownload(url);
       } else if (action.__tscArticle) void openShareCard(action.__tscArticle);
     });
     action.addEventListener('keydown', (event) => {

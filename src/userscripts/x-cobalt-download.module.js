@@ -93,11 +93,49 @@ function createMxgaCobalt(global) {
     });
   }
 
+  function cobaltDownloadRoute(config, tweetUrl) {
+    const source = cobaltRequestBody(tweetUrl).url;
+    const rawEndpoint = typeof config?.endpoint === 'string' ? config.endpoint.trim() : '';
+    if (!rawEndpoint) return { mode: 'web', url: `https://cobalt.tools/#${encodeURIComponent(source)}` };
+    const endpoint = normalizeCobaltUrl(rawEndpoint);
+    return endpoint ? { mode: 'api', url: endpoint } : { mode: 'settings', url: '' };
+  }
+
+  async function openCobaltWebsite(tweetUrl) {
+    const url = cobaltDownloadRoute({}, tweetUrl).url;
+    const gm = typeof GM !== 'undefined' ? GM : global.GM;
+    try {
+      if (typeof gm?.openInTab === 'function') {
+        await gm.openInTab(url, { active: true, insert: true });
+        return;
+      }
+    } catch (_) { /* Keep a user-clickable link if the manager rejects opening. */ }
+    openCobaltDownload(tweetUrl, { webFallback: url });
+  }
+
+  let routing = false;
+  async function startCobaltDownload(tweetUrl) {
+    if (routing) return;
+    routing = true;
+    try {
+      const gm = typeof GM !== 'undefined' ? GM : global.GM;
+      // A failed read is not evidence that the user selected public processing.
+      const config = gm?.getValue ? await gm.getValue(STORAGE_KEY, {}) : {};
+      const route = cobaltDownloadRoute(config, tweetUrl);
+      if (route.mode === 'web') await openCobaltWebsite(tweetUrl);
+      else openCobaltDownload(tweetUrl, { autoParse: route.mode === 'api' });
+    } catch (_) {
+      openCobaltDownload(tweetUrl);
+    } finally { routing = false; }
+  }
+
   let closeCurrent = null;
-  function openCobaltDownload(tweetUrl) {
+  function openCobaltDownload(tweetUrl, options = {}) {
     closeCurrent?.();
     const document = global.document;
     const gm = typeof GM !== 'undefined' ? GM : global.GM;
+    document.querySelector('[data-mxga-cobalt]')?.dispatchEvent(new global.Event('mxga-cobalt-close'));
+    const settingsOnly = !tweetUrl;
     const previousFocus = document.activeElement;
     const host = document.createElement('div');
     host.setAttribute('data-mxga-cobalt', '');
@@ -114,12 +152,12 @@ function createMxgaCobalt(global) {
       .status{white-space:pre-wrap}small{display:block;overflow-wrap:anywhere;color:#536471}
       @media(prefers-color-scheme:dark){:host{color:#e7e9ea}.panel{background:#15202b;border-color:#536471}input,button{background:#22303c;color:#e7e9ea}p,small{color:#a7b5c1}.submit{background:#1675d1}}
     </style><div class="backdrop"><section class="panel" role="dialog" aria-modal="true" aria-labelledby="cobalt-title">
-      <header><h2 id="cobalt-title">下载视频</h2><button type="button" class="close" aria-label="关闭">✕</button></header>
-      <p>使用你配置的 cobalt 服务解析视频。帖子链接会发送给该服务。</p>
-      <form><label>cobalt API 地址<input name="endpoint" type="url" placeholder="https://cobalt.example.com/" required autocomplete="off"></label>
+      <header><h2 id="cobalt-title">${settingsOnly ? '视频下载设置' : '下载视频'}</h2><button type="button" class="close" aria-label="关闭">✕</button></header>
+      <p>默认打开 cobalt 网页并带入帖子链接。填写自建 API 后，改由该服务解析视频。</p>
+      <form><label>cobalt API 地址<input name="endpoint" type="url" placeholder="留空使用 cobalt 网页" autocomplete="off"></label>
       <label>API Key（可选）<input name="key" type="password" autocomplete="off"></label>
-      <p>配置仅保存在本机脚本存储，不参与 MXGA 同步。</p>
-      <button class="submit" type="submit" disabled>保存并解析</button></form>
+      <p>配置仅保存在本机脚本存储，不参与 MXGA 同步。清空地址并保存可恢复默认。</p>
+      <button class="submit" type="submit" disabled>${settingsOnly ? '保存设置' : '保存并解析'}</button></form>
       <p class="status" role="status" aria-live="polite">正在读取配置…</p><div class="results"></div>
     </section></div>`;
     document.body.append(host);
@@ -140,6 +178,7 @@ function createMxgaCobalt(global) {
       if (previousFocus?.isConnected) previousFocus.focus();
     };
     closeCurrent = close;
+    host.addEventListener('mxga-cobalt-close', close, { once: true });
     shadow.querySelector('.close').onclick = close;
     shadow.querySelector('.backdrop').onclick = (event) => { if (event.target.className === 'backdrop') close(); };
     shadow.addEventListener('keydown', (event) => {
@@ -157,18 +196,24 @@ function createMxgaCobalt(global) {
       event.preventDefault();
       if (busy || closed) return;
       const url = normalizeCobaltUrl(endpoint.value);
-      if (!url) { status.textContent = '请输入有效的 HTTPS API 地址，不含查询参数或密钥'; endpoint.focus(); return; }
+      if (endpoint.value.trim() && !url) { status.textContent = '请输入有效的 HTTPS API 地址，不含查询参数或密钥'; endpoint.focus(); return; }
       if (!gm?.setValue) { status.textContent = '当前脚本管理器不支持配置存储'; return; }
       busy = true;
       button.disabled = true;
       endpoint.disabled = key.disabled = true;
       results.replaceChildren();
       controller = new global.AbortController();
-      status.textContent = '正在解析视频…';
+      status.textContent = settingsOnly ? '正在保存…' : '正在解析视频…';
       try {
-        const apiKey = key.value.trim();
+        const apiKey = url ? key.value.trim() : '';
         await gm.setValue(STORAGE_KEY, { endpoint: url, apiKey });
         if (closed) return;
+        if (settingsOnly) {
+          key.value = apiKey;
+          status.textContent = url ? '已保存，下载视频时将使用自建服务。' : '已恢复默认，下载视频时将打开 cobalt 网页。';
+          return;
+        }
+        if (!url) { close(); await openCobaltWebsite(tweetUrl); return; }
         const items = await requestCobalt(gm, url, apiKey, tweetUrl, controller.signal);
         if (closed) return;
         for (const item of items) {
@@ -185,7 +230,7 @@ function createMxgaCobalt(global) {
         if (!closed) status.textContent = error.message || '解析失败，请重试';
       } finally {
         busy = false;
-        if (!closed) { button.disabled = false; endpoint.disabled = key.disabled = false; button.textContent = '重新解析'; }
+        if (!closed) { button.disabled = false; endpoint.disabled = key.disabled = false; button.textContent = settingsOnly ? '保存设置' : '重新解析'; }
       }
     };
     (async () => {
@@ -193,14 +238,24 @@ function createMxgaCobalt(global) {
         if (!gm?.getValue) throw new Error('当前脚本管理器不支持配置存储');
         const config = await gm.getValue(STORAGE_KEY, {});
         if (closed) return;
-        endpoint.value = normalizeCobaltUrl(config?.endpoint);
+        endpoint.value = typeof config?.endpoint === 'string' ? config.endpoint.trim() : '';
         key.value = typeof config?.apiKey === 'string' ? config.apiKey : '';
-        status.textContent = endpoint.value ? '配置已加载，点击解析视频。' : '首次使用请填写你的 cobalt API 地址。';
+        status.textContent = !endpoint.value ? '当前使用 cobalt 网页，无需配置。'
+          : normalizeCobaltUrl(endpoint.value) ? '已配置自建服务。' : '已保存的 API 地址无效，请修正或清空后保存。';
         button.disabled = false;
         endpoint.focus();
+        if (options.autoParse && endpoint.value) form.requestSubmit();
       } catch (_) { if (!closed) status.textContent = '无法读取本地配置，请检查脚本管理器存储权限'; }
     })();
+    if (options.webFallback) {
+      const link = document.createElement('a');
+      link.href = options.webFallback;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = '打开 cobalt 网页';
+      results.append(link);
+    }
   }
-  return { normalizeCobaltUrl, cobaltRequestBody, parseCobaltResponse, requestCobalt, openCobaltDownload };
+  return { normalizeCobaltUrl, cobaltRequestBody, parseCobaltResponse, requestCobalt, cobaltDownloadRoute, startCobaltDownload, openCobaltDownload };
 }
 if (typeof module !== 'undefined' && module.exports) Object.assign(module.exports, createMxgaCobalt(globalThis));

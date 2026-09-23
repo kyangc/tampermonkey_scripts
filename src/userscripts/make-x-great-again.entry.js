@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.6.1
+// @version      0.6.2
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -1307,6 +1307,7 @@
       '<input class="sync-token" type="password" data-role="filter-sync-token" aria-label="多端同步密钥" placeholder="粘贴同步密钥" autocomplete="off" spellcheck="false">',
       '<div class="actions sync-actions"><button class="button" type="button" data-action="save-filter-sync">保存并同步</button><button class="button" type="button" data-action="sync-filters" hidden>立即同步</button><button class="button" type="button" data-action="disconnect-filter-sync" hidden>断开</button></div>',
       '</section>',
+      '<div class="actions"><button class="button" type="button" data-action="configure-cobalt">视频下载设置</button></div>',
       '<div class="actions"><button class="button primary" type="button" data-action="sync">立即更新名单</button></div>',
       '<section class="section">',
       '<div class="section-heading"><h3>本地隐藏记录</h3><span data-role="hidden-count">0 个</span></div>',
@@ -1654,6 +1655,7 @@
       if (action === 'toggle-panel') setPanel(elements.panel.hidden);
       else if (action === 'close-panel') setPanel(false);
       else if (action === 'close-popover') closePopover();
+      else if (action === 'configure-cobalt') { setPanel(false); callbacks.onConfigureCobalt(); }
       else if (action === 'sync') callbacks.onSync();
       else if (action === 'save-filter-sync') {
         callbacks.onFilterSyncTokenChange(elements.filterSyncToken.value);
@@ -2325,6 +2327,7 @@
     ui = createUi(
       {
         onAppeal: () => openExternal(gm, APPEAL_URL),
+        onConfigureCobalt: () => createMxgaCobalt(global).openCobaltDownload(),
         onEnabledChange: (enabled) => {
           void updateSettings({ enabled });
         },

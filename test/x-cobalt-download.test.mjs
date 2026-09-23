@@ -144,3 +144,19 @@ test('identifies only native video download menu items, including a separate Pre
   const menu = { querySelectorAll: () => [native, english, byId, ours, item('复制链接'), item('Download image')] };
   assert.deepEqual(core.findNativeVideoDownloadItems(menu), [native, english, byId]);
 });
+
+test('unconfigured downloads use a canonical tweet link in the cobalt website fragment', () => {
+  for (const config of [undefined, {}, { endpoint: '' }, { endpoint: '  ', apiKey: 'old-local-key' }]) {
+    const route = core.cobaltDownloadRoute(config, 'https://twitter.com/example/status/123?s=20');
+    assert.equal(route.mode, 'web');
+    assert.equal(route.url, `https://cobalt.tools/#${encodeURIComponent(tweet)}`);
+    assert.equal(new URL(route.url).search, '');
+    assert.equal(route.url.includes('old-local-key'), false);
+  }
+});
+
+test('configured API remains selected and malformed saved endpoints require settings', () => {
+  assert.deepEqual(core.cobaltDownloadRoute({ endpoint }, tweet), { mode: 'api', url: endpoint });
+  assert.deepEqual(core.cobaltDownloadRoute({ endpoint: 'http://private.example' }, tweet), { mode: 'settings', url: '' });
+  assert.throws(() => core.cobaltDownloadRoute({}, 'https://evil.example/example/status/123'));
+});

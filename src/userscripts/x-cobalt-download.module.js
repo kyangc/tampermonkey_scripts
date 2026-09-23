@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Bundled helper; settings stay in userscript storage, outside MXGA filter sync.
+// Bundled helper; encrypted configuration sync is managed by the MXGA entry.
 function createMxgaCobalt(global) {
   'use strict';
   const STORAGE_KEY = 'mxga:cobalt:v1';
@@ -156,7 +156,7 @@ function createMxgaCobalt(global) {
       <p>默认打开 cobalt 网页并带入帖子链接。填写自建 API 后，改由该服务解析视频。</p>
       <form><label>cobalt API 地址<input name="endpoint" type="url" placeholder="留空使用 cobalt 网页" autocomplete="off"></label>
       <label>API Key（可选）<input name="key" type="password" autocomplete="off"></label>
-      <p>配置仅保存在本机脚本存储，不参与 MXGA 同步。清空地址并保存可恢复默认。</p>
+      <p>地址和 API Key 默认仅在本机保存；在 MXGA 设置中启用配置加密同步后可跨设备同步。清空地址并保存可恢复默认。</p>
       <button class="submit" type="submit" disabled>${settingsOnly ? '保存设置' : '保存并解析'}</button></form>
       <p class="status" role="status" aria-live="polite">正在读取配置…</p><div class="results"></div>
     </section></div>`;
@@ -207,6 +207,7 @@ function createMxgaCobalt(global) {
       try {
         const apiKey = url ? key.value.trim() : '';
         await gm.setValue(STORAGE_KEY, { endpoint: url, apiKey });
+        document.dispatchEvent(new global.Event('mxga-cobalt-config-saved'));
         if (closed) return;
         if (settingsOnly) {
           key.value = apiKey;

@@ -18,6 +18,7 @@ const bundles = [
     sources: [
       'src/userscripts/make-x-great-again.entry.js',
       'src/userscripts/mxga-panel.module.js',
+      'src/userscripts/mxga-cobalt-sync.module.js',
       'src/userscripts/x-cobalt-download.module.js',
       'src/userscripts/x-tweet-share-card.module.js',
     ],

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.7.0
+// @version      0.7.1
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -320,7 +320,9 @@
         value: keyword || null,
       };
     }
-    return { items, schema: 1 };
+    const cobalt = normalizeCobaltSyncEvent(value?.cobalt);
+    if (value?.cobalt !== undefined && !cobalt) throw new Error('cobalt 同步密文格式无效，已保留本地配置。');
+    return { items, schema: 1, ...(cobalt ? { cobalt } : {}) };
   }
 
   function filterItems(filters) {
@@ -383,7 +385,7 @@
         value: null,
       };
     }
-    return { items, schema: 1 };
+    return { ...document, items, schema: 1 };
   }
 
   function mergeFilterDocuments(leftValue, rightValue) {
@@ -400,7 +402,8 @@
         items[id] = candidate;
       }
     }
-    return { items, schema: 1 };
+    const cobalt = newestCobaltSyncEvent(left.cobalt, right.cobalt);
+    return { items, schema: 1, ...(cobalt ? { cobalt } : {}) };
   }
 
   function materializeFilterDocument(value) {
@@ -424,7 +427,7 @@
     const document = normalizeFilterDocument(value);
     const items = {};
     for (const key of Object.keys(document.items).sort()) items[key] = document.items[key];
-    return JSON.stringify({ items, schema: 1 });
+    return JSON.stringify({ ...document, items, schema: 1 });
   }
 
   function createFilterSynchronizer(options) {
@@ -446,8 +449,11 @@
         throw new Error(fetched?.body?.error?.message || '无法读取同步列表。');
       }
 
+      const prepared = options.prepareDocument
+        ? await options.prepareDocument(localState.document, normalizeFilterDocument(fetched.body?.document))
+        : localState.document;
       let revision = Number(fetched.body?.revision) || 0;
-      let document = mergeFilterDocuments(localState?.document, fetched.body?.document);
+      let document = mergeFilterDocuments(prepared, fetched.body?.document);
       let remote = normalizeFilterDocument(fetched.body?.document);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (serializeFilterDocument(document) === serializeFilterDocument(remote)) {
@@ -518,6 +524,9 @@
     normalizeMxgaPosition,
     getMxgaDock,
     removeRetiredListCache,
+    normalizeCobaltSyncEvent,
+    newestCobaltSyncEvent,
+    createCobaltConfigSync,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -773,9 +782,11 @@
       console.warn('[MXGA] 旧缓存清理失败，下次启动重试', errorMessage(error));
     });
     const requestJson = createJsonRequestAdapter(gm);
+    const cobaltConfigSync = createCobaltConfigSync(gm, global.crypto);
     const filterSynchronizer = createFilterSynchronizer({
       endpoint: FILTER_SYNC_ENDPOINT,
       requestJson,
+      prepareDocument: (local, remote) => cobaltConfigSync.prepare(local, remote, state.filterSync.deviceId, state.filterSync.token),
     });
     const [storedSettings, storedHidden, storedPosition, storedFilterSync] = await Promise.all([
       storage.get(STORAGE_KEYS.settings, DEFAULT_SETTINGS),
@@ -794,6 +805,7 @@
       filterSync,
       filterSyncing: false,
       filterSyncError: '',
+      cobaltSyncEnabled: await cobaltConfigSync.enabled(),
     };
     if (state.filterSync.token) {
       state.filterSync.document = reconcileFilterDocument(
@@ -813,6 +825,7 @@
     let filterSyncQueued = false;
     function render() {
       ui.render({
+        cobaltSyncEnabled: state.cobaltSyncEnabled,
         settings: state.settings,
         hiddenRecords: state.hidden.list(),
         filterSync: {
@@ -934,7 +947,9 @@
           storage.set(STORAGE_KEYS.hidden, state.hidden.list()),
           persistFilterSync(),
         ]);
+        const cobaltApplied = await cobaltConfigSync.apply(document.cobalt);
         scanner.schedule();
+        if (!cobaltApplied) filterSyncQueued = true;
         if (needsAnotherPush) filterSyncQueued = true;
       } catch (error) {
         state.filterSyncError = errorMessage(error, '多端同步失败');
@@ -1010,8 +1025,25 @@
       scanner.schedule();
     }
 
+    async function configureCobaltSync(passphrase) {
+      try {
+        if (passphrase && passphrase === state.filterSync.token) throw new Error('请使用独立于同步密钥的配置加密口令。');
+        await cobaltConfigSync.configure(passphrase);
+        state.cobaltSyncEnabled = await cobaltConfigSync.enabled();
+        state.filterSyncError = '';
+        render();
+        if (passphrase) await syncFiltersNow();
+      } catch (error) { state.filterSyncError = errorMessage(error); render(); }
+    }
+    document.addEventListener('mxga-cobalt-config-saved', () => {
+      void cobaltConfigSync.markChanged().then(() => {
+        if (state.filterSync.token) scheduleFilterSync();
+      }).catch((error) => { state.filterSyncError = errorMessage(error); render(); });
+    });
+
     ui = createMxgaUi(global,
       {
+        onConfigureCobaltSync: configureCobaltSync,
         onConfigureCobalt: () => createMxgaCobalt(global).openCobaltDownload(),
         onEnabledChange: (enabled) => {
           void updateSettings({ enabled });

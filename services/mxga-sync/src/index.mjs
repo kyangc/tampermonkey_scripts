@@ -1,4 +1,4 @@
-const SERVICE_VERSION = '0.1.0';
+const SERVICE_VERSION = '0.2.0';
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_ITEMS = 5000;
 const SOURCE_RE = /^[A-Za-z0-9_-]{8,80}$/;
@@ -107,6 +107,26 @@ function validateEvent(id, value) {
   return value;
 }
 
+function validateCobaltEnvelope(value) {
+  const encoded = (text, length) => typeof text === 'string' && text.length === length && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
+  if (!value || value.v !== 1 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt <= 0
+    || !SOURCE_RE.test(value.source || '') || !encoded(value.salt, 24) || !encoded(value.iv, 16)
+    || typeof value.data !== 'string' || value.data.length < 24 || value.data.length > 8192
+    || value.data.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)
+    || Object.keys(value).some((key) => !['v', 'updatedAt', 'source', 'salt', 'iv', 'data'].includes(key))) {
+    throw apiError(400, 'invalid_cobalt_ciphertext', 'cobalt 配置只能以有效密文同步。');
+  }
+  return value;
+}
+
+function newestCobalt(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  if (left.updatedAt !== right.updatedAt) return left.updatedAt > right.updatedAt ? left : right;
+  if (left.source !== right.source) return left.source > right.source ? left : right;
+  return JSON.stringify(left) > JSON.stringify(right) ? left : right;
+}
+
 function validateDocument(value) {
   if (!value || value.schema !== 1 || !value.items || typeof value.items !== 'object' || Array.isArray(value.items)) {
     throw apiError(400, 'invalid_document', '同步文档格式不正确。');
@@ -119,7 +139,8 @@ function validateDocument(value) {
     if (id.length > 256) throw apiError(400, 'invalid_document', '同步条目标识过长。');
     validateEvent(id, event);
   }
-  return { items: Object.fromEntries(entries), schema: 1 };
+  return { items: Object.fromEntries(entries), schema: 1,
+    ...(value.cobalt === undefined ? {} : { cobalt: validateCobaltEnvelope(value.cobalt) }) };
 }
 
 async function readSnapshot(env) {
@@ -138,6 +159,11 @@ async function writeSnapshot(request, env) {
     throw apiError(400, 'invalid_revision', 'baseRevision 必须是非负整数。');
   }
   const document = validateDocument(body.document);
+  // Old clients omit cobalt when writing their v1 rule document. Preserve it.
+  // The revision-guarded write below still detects changes after this read.
+  const current = await readSnapshot(env);
+  const cobalt = newestCobalt(current.document.cobalt, document.cobalt);
+  if (cobalt) document.cobalt = cobalt;
   const serialized = JSON.stringify(document);
   const updatedAt = Math.floor(Date.now() / 1000);
   const result = baseRevision === 0

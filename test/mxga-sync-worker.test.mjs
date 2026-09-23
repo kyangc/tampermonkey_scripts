@@ -106,3 +106,17 @@ test('MXGA sync snapshots are public to read, authenticated to write, and revisi
   assert.equal(stale.body.revision, 1);
   assert.deepEqual(stale.body.document, document);
 });
+
+test('encrypted cobalt envelope survives legacy client writes and rejects plaintext', async () => {
+  const env={DB:new FakeD1(schema),SYNC_TOKEN:'write-token-long-enough-for-tests'};
+  const headers={authorization:`Bearer ${env.SYNC_TOKEN}`};
+  const cobalt={v:1,updatedAt:100,source:'device-primary',salt:'A'.repeat(22)+'==',iv:'A'.repeat(16),data:'A'.repeat(24)};
+  const document={schema:1,items:{},cobalt};
+  assert.equal((await call(env,'/v1/snapshot',{headers,body:{baseRevision:0,document}})).status,200);
+  const legacy={schema:1,items:{}};
+  assert.equal((await call(env,'/v1/snapshot',{headers,body:{baseRevision:1,document:legacy}})).status,200);
+  assert.deepEqual((await call(env,'/v1/snapshot')).body.document.cobalt,cobalt);
+  const bad=await call(env,'/v1/snapshot',{headers,body:{baseRevision:2,document:{...document,cobalt:{...cobalt,apiKey:'must-never-publish'}}}});
+  assert.equal(bad.status,400);
+  assert.deepEqual((await call(env,'/v1/snapshot')).body.document.cobalt,cobalt);
+});

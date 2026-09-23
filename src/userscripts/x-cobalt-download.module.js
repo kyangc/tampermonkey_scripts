@@ -195,6 +195,7 @@ function createMxgaCobalt(global) {
     const controller = new global.AbortController();
     let items = pendingItems;
     let completed = firstIndex;
+    let configWarning = '';
     try {
       const gm = typeof GM !== 'undefined' ? GM : global.GM;
       // A failed read is not evidence that the user selected public processing.
@@ -203,13 +204,22 @@ function createMxgaCobalt(global) {
       if (route.mode === 'web') { await openCobaltWebsite(tweetUrl); return; }
       if (route.mode === 'settings') { openCobaltDownload(tweetUrl); return; }
       notice = createDownloadNotice(() => controller.abort());
-      if (!items) items = await requestCobalt(gm, route.url, config.apiKey || '', tweetUrl, controller.signal);
+      if (!items) {
+        try { items = await requestCobalt(gm, route.url, config.apiKey || '', tweetUrl, controller.signal); }
+        catch (error) {
+          if (controller.signal.aborted) return;
+          if (/API Key|服务拒绝访问/.test(error.message)) configWarning = '（cobalt 鉴权失败，请检查下载设置）';
+          notice.setStatus('cobalt 解析失败，正在从当前页面获取视频…');
+          try { items = await createMxgaVideoSource(global).resolve(tweetUrl, controller.signal); }
+          catch (fallbackError) { throw new Error(`${error.message}；${fallbackError.message}`); }
+        }
+      }
       for (; completed < items.length; completed++) {
         if (controller.signal.aborted) return;
         notice.setStatus(`正在下载视频 ${completed + 1}/${items.length}…`);
         await downloadCobaltFile(gm, items[completed], tweetUrl, completed, controller.signal);
       }
-      notice.finish(items.length > 1 ? `${items.length} 个视频下载完成` : '视频下载完成');
+      notice.finish((items.length > 1 ? `${items.length} 个视频下载完成` : '视频下载完成') + configWarning);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (!notice) { openCobaltDownload(tweetUrl); return; }

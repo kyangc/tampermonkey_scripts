@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Make X Great Again (Userscript)
 // @namespace    https://github.com/kyangc/tampermonkey_scripts
-// @version      0.7.2
+// @version      0.7.3
 // @description  Quick-block and sync selected phrases or users, hide spam, generate share cards, and download videos via cobalt on X.
 // @author       kyangc
 // @license      AGPL-3.0-or-later
@@ -12,8 +12,8 @@
 // @downloadURL  https://raw.githubusercontent.com/kyangc/tampermonkey_scripts/main/scripts/make-x-great-again.user.js
 // @match        https://x.com/*
 // @match        https://twitter.com/*
-// @require      https://raw.githubusercontent.com/kazuhikoarase/qrcode-generator/js2.0.4/js/dist/qrcode.js#sha256-eeyG+ChWAFsciHkFz8z8++w4Icphx/1alS+qX3ePeRw=
-// @run-at       document-idle
+// @run-at       document-start
+// @grant        unsafeWindow
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @grant        GM.deleteValue
@@ -535,6 +535,11 @@
     return;
   }
 
+  createMxgaVideoSource(global, typeof unsafeWindow !== 'undefined' ? unsafeWindow : global);
+  if (global.document?.readyState === 'loading') {
+    global.document.addEventListener('DOMContentLoaded', () => makeXGreatAgainUserscript(global), { once: true });
+    return;
+  }
   const runtimeRoot = global.document?.documentElement;
   if (!claimRuntimeMount(runtimeRoot)) return;
 

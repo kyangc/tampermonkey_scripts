@@ -885,7 +885,7 @@
       ? qrFactory
       : typeof qrcode === 'function'
         ? qrcode
-        : global?.qrcode;
+        : global?.qrcode || (createMxgaQrCode.cached ||= createMxgaQrCode());
     if (typeof factory !== 'function') {
       throw new Error('二维码生成组件未加载');
     }
@@ -962,6 +962,10 @@
 
   if (!global || !global.document) return;
 
+  if (global.document.readyState === 'loading') {
+    global.document.addEventListener('DOMContentLoaded', () => xTweetShareCard(global), { once: true });
+    return;
+  }
   const cobalt = createMxgaCobalt(global);
   const document = global.document;
   const runtimeRoot = document.documentElement;

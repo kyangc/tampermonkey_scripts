@@ -334,11 +334,10 @@ test('metadata targets desktop Tampermonkey without public list permissions', ()
     'pbs.twimg.com',
     '*', // User-configured cobalt instance; no private endpoint in the public bundle.
   ]);
-  assert.match(
-    metadataValues('require')[0],
-    /^https:\/\/raw\.githubusercontent\.com\/kazuhikoarase\/qrcode-generator\/.*#sha256-/,
-  );
+  assert.deepEqual(metadataValues('require'), []);
+  assert.deepEqual(metadataValues('run-at'), ['document-start']);
   assert.deepEqual(new Set(metadataValues('grant')), new Set([
+    'unsafeWindow',
     'GM.getValue',
     'GM.setValue',
     'GM.deleteValue',
@@ -394,9 +393,9 @@ test('published userscript mounts a compact direct-block icon on tweet author av
   assert.match(scriptText, /categoryText: '手动屏蔽'/);
 });
 
-test('userscript contains no X private API or page-world network client', () => {
+test('filtering does not call X account mutation APIs', () => {
   assert.doesNotMatch(mxgaSourceText, /\b(?:fetch|XMLHttpRequest)\s*\(/);
-  assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users|\/i\/api\/|graphql)/i);
+  assert.doesNotMatch(scriptText, /(?:blocks\/create|mutes\/users)/i);
 });
 
 test('retired caches are deleted without being read and personal keys are untouched', async () => {

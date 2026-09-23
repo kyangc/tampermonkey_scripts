@@ -601,12 +601,13 @@ test('pixel-aligns QR modules with at least a four-module quiet zone', () => {
   assert.equal(rect.x + rect.width - (render.originX + render.codeSize) >= render.quietZoneSize, true);
 });
 
-test('loads a pinned integrity-checked QR encoder without using an online QR service', () => {
-  assert.match(
-    scriptText,
-    /@require\s+https:\/\/raw\.githubusercontent\.com\/kazuhikoarase\/qrcode-generator\/js2\.0\.4\/js\/dist\/qrcode\.js#sha256-eeyG\+ChWAFsciHkFz8z8\+\+w4Icphx\/1alS\+qX3ePeRw=/,
-  );
+test('bundles the QR encoder without a startup network dependency', () => {
+  assert.doesNotMatch(scriptText, /@require/);
+  assert.match(scriptText, /Vendored qrcode-generator 2.0.4/);
   assert.doesNotMatch(scriptText, /api\.qrserver|quickchart|chart\.googleapis/i);
+  const matrix = core.createQrMatrix('https://x.com/example/status/123');
+  assert.ok(matrix.length > 20);
+  assert.ok(matrix.every(row => row.length === matrix.length));
 });
 
 test('lays out a complete nested tweet with its own X-style media grid', () => {
